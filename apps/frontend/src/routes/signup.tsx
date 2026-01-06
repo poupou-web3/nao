@@ -1,13 +1,13 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
 import { signUp } from '@/lib/auth-client';
-import { SignForm } from '@/components/signinForm';
+import { SignInForm } from '@/components/signinForm';
 
 export const Route = createFileRoute('/signup')({
-	component: SignUpForm,
+	component: SignUp,
 });
 
-function SignUpForm() {
+function SignUp() {
 	const navigate = useNavigate();
 	const [formData, setFormData] = useState({
 		name: '',
@@ -66,7 +66,7 @@ function SignUpForm() {
 	];
 
 	return (
-		<SignForm
+		<SignInForm
 			title='Sign Up'
 			fields={fields}
 			formData={formData}

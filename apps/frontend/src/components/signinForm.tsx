@@ -26,7 +26,7 @@ interface SignFormProps {
 	error?: string;
 }
 
-export function SignForm({
+export function SignInForm({
 	title,
 	fields,
 	formData,

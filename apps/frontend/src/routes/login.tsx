@@ -1,13 +1,13 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
 import { signIn } from '@/lib/auth-client';
-import { SignForm } from '@/components/signinForm';
+import { SignInForm } from '@/components/signinForm';
 
 export const Route = createFileRoute('/login')({
-	component: SignInForm,
+	component: Login,
 });
 
-function SignInForm() {
+function Login() {
 	const navigate = useNavigate();
 	const [formData, setFormData] = useState({
 		email: '',
@@ -59,7 +59,7 @@ function SignInForm() {
 	];
 
 	return (
-		<SignForm
+		<SignInForm
 			title='Sign In'
 			fields={fields}
 			formData={formData}
