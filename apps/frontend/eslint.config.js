@@ -15,4 +15,7 @@ export default [
 			'@typescript-eslint/no-explicit-any': 'off',
 		},
 	},
+	{
+		ignores: ['eslint.config.js'],
+	},
 ];
