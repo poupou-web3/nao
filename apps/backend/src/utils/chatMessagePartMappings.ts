@@ -78,6 +78,7 @@ export const convertDBPartToUIPart = (part: DBMessagePart): UIMessagePart | unde
 			input: part.toolInput as any,
 			output: part.toolOutput as any,
 			errorText: part.toolErrorText as any,
+			providerExecuted: true,
 			approval: part.toolApprovalId
 				? {
 						id: part.toolApprovalId!,
