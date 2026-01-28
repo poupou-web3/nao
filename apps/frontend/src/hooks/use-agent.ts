@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useEffect, useRef, useCallback } from 'react';
+import { useMemo, useEffect, useRef, useCallback, useState } from 'react';
 import { Chat as Agent, useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { useCurrent } from './useCurrent';
@@ -13,6 +13,37 @@ import { trpc } from '@/main';
 import { agentService } from '@/lib/agents.service';
 import { checkIsAgentRunning } from '@/lib/ai';
 
+export type ModelSelection = {
+	provider: 'openai' | 'anthropic';
+	modelId: string;
+} | null;
+
+const MODEL_STORAGE_KEY = 'nao-selected-model';
+
+function getStoredModel(): ModelSelection {
+	try {
+		const stored = localStorage.getItem(MODEL_STORAGE_KEY);
+		if (stored) {
+			return JSON.parse(stored);
+		}
+	} catch {
+		// Ignore parse errors
+	}
+	return null;
+}
+
+function storeModel(model: ModelSelection) {
+	try {
+		if (model) {
+			localStorage.setItem(MODEL_STORAGE_KEY, JSON.stringify(model));
+		} else {
+			localStorage.removeItem(MODEL_STORAGE_KEY);
+		}
+	} catch {
+		// Ignore storage errors
+	}
+}
+
 export type AgentHelpers = {
 	messages: UIMessage[];
 	setMessages: UseChatHelpers<UIMessage>['setMessages'];
@@ -24,6 +55,8 @@ export type AgentHelpers = {
 	registerScrollDown: (fn: ScrollToBottom) => { dispose: () => void };
 	error: Error | undefined;
 	clearError: UseChatHelpers<UIMessage>['clearError'];
+	selectedModel: ModelSelection;
+	setSelectedModel: (model: ModelSelection) => void;
 };
 
 export const useAgent = (): AgentHelpers => {
@@ -33,6 +66,13 @@ export const useAgent = (): AgentHelpers => {
 	const queryClient = useQueryClient();
 	const chatIdRef = useCurrent(chatId);
 	const scrollDownService = useScrollDownCallbackService();
+	const [selectedModel, setSelectedModelState] = useState<ModelSelection>(getStoredModel);
+	const selectedModelRef = useCurrent(selectedModel);
+
+	const setSelectedModel = useCallback((model: ModelSelection) => {
+		setSelectedModelState(model);
+		storeModel(model);
+	}, []);
 
 	const agentInstance = useMemo(() => {
 		let agentId = chatId ?? 'new-chat';
@@ -49,6 +89,7 @@ export const useAgent = (): AgentHelpers => {
 						body: {
 							chatId: chatIdRef.current, // Using the ref to send new id when chat was created
 							message: options.messages.at(-1),
+							model: selectedModelRef.current ?? undefined,
 						},
 					};
 				},
@@ -92,7 +133,7 @@ export const useAgent = (): AgentHelpers => {
 		});
 
 		return agentService.registerAgent(agentId, newAgent);
-	}, [chatId, navigate, queryClient, chatIdRef]);
+	}, [chatId, navigate, queryClient, chatIdRef, selectedModelRef]);
 
 	const agent = useChat({ chat: agentInstance });
 
@@ -132,6 +173,8 @@ export const useAgent = (): AgentHelpers => {
 		registerScrollDown: scrollDownService.register,
 		error: agent.error,
 		clearError: agent.clearError,
+		selectedModel,
+		setSelectedModel,
 	});
 };
 

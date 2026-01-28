@@ -1,25 +1,47 @@
-import { ArrowUpIcon, SquareIcon } from 'lucide-react';
-import { useState } from 'react';
+import { ArrowUpIcon, ChevronDown, SquareIcon } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import { useParams } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import type { FormEvent, KeyboardEvent } from 'react';
 
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from '@/components/ui/input-group';
+import {
+	DropdownMenu,
+	DropdownMenuItem,
+	DropdownMenuGroup,
+	DropdownMenuContent,
+	DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { trpc } from '@/main';
 import { useAgentContext } from '@/contexts/agent.provider';
-
-export interface Props {
-	onSubmit: (message: string) => void;
-	onStop: () => void;
-	isLoading: boolean;
-	disabled?: boolean;
-}
+import { ProviderIcon } from '@/components/ui/provider-icon';
 
 export function ChatInput() {
-	const { sendMessage, isRunning, stopAgent, isReadyForNewMessages } = useAgentContext();
+	const { sendMessage, isRunning, stopAgent, isReadyForNewMessages, selectedModel, setSelectedModel } =
+		useAgentContext();
 	const chatId = useParams({ strict: false, select: (p) => p.chatId });
-	const modelProvider = useQuery(trpc.project.getModelProvider.queryOptions());
+	const availableModels = useQuery(trpc.project.getAvailableModels.queryOptions());
+	const knownModels = useQuery(trpc.project.getKnownModels.queryOptions());
 	const [input, setInput] = useState('');
+
+	// Set default model when available models load, or reset if current selection is no longer available
+	useEffect(() => {
+		if (!availableModels.data || availableModels.data.length === 0) {
+			return;
+		}
+
+		// Check if current selection is still valid
+		const isCurrentSelectionValid =
+			selectedModel &&
+			availableModels.data.some(
+				(m) => m.provider === selectedModel.provider && m.modelId === selectedModel.modelId,
+			);
+
+		if (!isCurrentSelectionValid) {
+			// Set to first available model
+			setSelectedModel(availableModels.data[0]);
+		}
+	}, [availableModels.data, selectedModel, setSelectedModel]);
 
 	const handleSubmit = (e: FormEvent) => {
 		e.preventDefault();
@@ -37,6 +59,15 @@ export function ChatInput() {
 		}
 	};
 
+	const getModelDisplayName = (provider: string, modelId: string) => {
+		const models = knownModels.data?.[provider as 'openai' | 'anthropic'] ?? [];
+		const model = models.find((m) => m.id === modelId);
+		return model?.name ?? modelId;
+	};
+
+	const models = availableModels.data ?? [];
+	const hasMultipleModels = models.length > 1;
+
 	return (
 		<div className='p-4 pt-0 max-w-3xl w-full mx-auto'>
 			<form onSubmit={handleSubmit} className='mx-auto'>
@@ -52,10 +83,49 @@ export function ChatInput() {
 					/>
 
 					<InputGroupAddon align='block-end'>
-						{modelProvider.data && (
-							<div className='text-sm font-normal text-muted-foreground'>
-								{modelProvider.data === 'anthropic' ? 'Opus 4.5' : 'GPT-5.1'}
-							</div>
+						{/* Model selector */}
+						{models.length > 0 && (
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild disabled={!hasMultipleModels}>
+									<button
+										type='button'
+										className={`
+											flex items-center gap-1.5 text-sm font-normal text-muted-foreground outline-none
+											${hasMultipleModels ? 'hover:text-foreground cursor-pointer' : 'cursor-default'}
+										`}
+									>
+										{selectedModel && (
+											<ProviderIcon provider={selectedModel.provider} className='size-3.5' />
+										)}
+										{selectedModel
+											? getModelDisplayName(selectedModel.provider, selectedModel.modelId)
+											: 'Select model'}
+										{hasMultipleModels && <ChevronDown className='size-3' />}
+									</button>
+								</DropdownMenuTrigger>
+
+								{hasMultipleModels && (
+									<DropdownMenuContent align='start' side='top'>
+										<DropdownMenuGroup>
+											{models.map((model) => {
+												const isSelected =
+													selectedModel?.provider === model.provider &&
+													selectedModel?.modelId === model.modelId;
+												return (
+													<DropdownMenuItem
+														key={`${model.provider}-${model.modelId}`}
+														onSelect={() => setSelectedModel(model)}
+														className={isSelected ? 'bg-accent' : ''}
+													>
+														<ProviderIcon provider={model.provider} className='size-4' />
+														{getModelDisplayName(model.provider, model.modelId)}
+													</DropdownMenuItem>
+												);
+											})}
+										</DropdownMenuGroup>
+									</DropdownMenuContent>
+								)}
+							</DropdownMenu>
 						)}
 
 						{isRunning ? (

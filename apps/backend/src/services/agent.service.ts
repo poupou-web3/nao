@@ -13,22 +13,69 @@ import { tools } from '../agents/tools';
 import * as chatQueries from '../queries/chat.queries';
 import * as llmConfigQueries from '../queries/project-llm-config.queries';
 import { UIChat, UIMessage } from '../types/chat';
+import { LlmProvider } from '../types/llm';
 import { convertToTokenUsage } from '../utils/chat';
+import { getDefaultModelId, getEnvApiKey, hasEnvApiKey } from '../utils/llm';
 
 type AgentChat = UIChat & {
 	userId: string;
 	projectId: string;
 };
 
+export type ModelSelection = {
+	provider: LlmProvider;
+	modelId: string;
+};
+
 class AgentService {
 	private _agents = new Map<string, AgentManager>();
 
-	async create(chat: AgentChat, abortController: AbortController): Promise<AgentManager> {
+	async create(
+		chat: AgentChat,
+		abortController: AbortController,
+		modelSelection?: ModelSelection,
+	): Promise<AgentManager> {
 		this._disposeAgent(chat.id);
-		const modelConfig = await this._getModelConfig(chat.projectId);
-		const agent = new AgentManager(chat, modelConfig, () => this._agents.delete(chat.id), abortController);
+		const resolvedModelSelection = await this._getResolvedModelSelection(chat.projectId, modelSelection);
+		const modelConfig = await this._getModelConfig(chat.projectId, resolvedModelSelection);
+		const agent = new AgentManager(
+			chat,
+			modelConfig,
+			resolvedModelSelection,
+			() => this._agents.delete(chat.id),
+			abortController,
+		);
 		this._agents.set(chat.id, agent);
 		return agent;
+	}
+
+	private async _getResolvedModelSelection(
+		projectId: string,
+		modelSelection?: ModelSelection,
+	): Promise<ModelSelection> {
+		if (modelSelection) {
+			return modelSelection;
+		}
+
+		// Get the first available provider config
+		const configs = await llmConfigQueries.getProjectLlmConfigs(projectId);
+		const config = configs.at(0);
+		if (config) {
+			return {
+				provider: config.provider,
+				modelId: getDefaultModelId(config.provider),
+			};
+		}
+
+		// Fallback to env-based provider
+		const providers: LlmProvider[] = ['anthropic', 'openai'];
+		for (const provider of providers) {
+			if (hasEnvApiKey(provider)) {
+				return { provider, modelId: getDefaultModelId(provider) };
+			}
+		}
+
+		throw Error('No model config found');
 	}
 
 	private _disposeAgent(chatId: string): void {
@@ -46,13 +93,41 @@ class AgentService {
 
 	private async _getModelConfig(
 		projectId: string,
+		modelSelection: ModelSelection,
 	): Promise<Pick<ToolLoopAgentSettings, 'model' | 'providerOptions'>> {
-		// Try to get project-specific LLM config first
-		const anthropicConfig = await llmConfigQueries.getProjectLlmConfigByProvider(projectId, 'anthropic');
-		if (anthropicConfig) {
-			const provider = createAnthropic({ apiKey: anthropicConfig.apiKey });
+		const config = await llmConfigQueries.getProjectLlmConfigByProvider(projectId, modelSelection.provider);
+
+		if (config) {
+			return this._createProviderConfig(
+				modelSelection.provider,
+				config.apiKey,
+				modelSelection.modelId,
+				config.baseUrl,
+			);
+		}
+
+		// No config but env var might exist - use it
+		const envApiKey = getEnvApiKey(modelSelection.provider);
+		if (envApiKey) {
+			return this._createProviderConfig(modelSelection.provider, envApiKey, modelSelection.modelId);
+		}
+
+		throw Error('No model config found');
+	}
+
+	private _createProviderConfig(
+		provider: LlmProvider,
+		apiKey: string,
+		modelId: string,
+		baseUrl?: string | null,
+	): Pick<ToolLoopAgentSettings, 'model' | 'providerOptions'> {
+		if (provider === 'anthropic') {
+			const anthropic = createAnthropic({
+				apiKey,
+				...(baseUrl && { baseURL: baseUrl }),
+			});
 			return {
-				model: provider.chat('claude-opus-4-5'),
+				model: anthropic.chat(modelId),
 				providerOptions: {
 					anthropic: {
 						disableParallelToolUse: false,
@@ -65,51 +140,16 @@ class AgentService {
 			};
 		}
 
-		const openaiConfig = await llmConfigQueries.getProjectLlmConfigByProvider(projectId, 'openai');
-		if (openaiConfig) {
-			const provider = createOpenAI({ apiKey: openaiConfig.apiKey });
-			return {
-				model: provider.chat('gpt-5.1'),
-				providerOptions: {
-					openai: {
-						// TODO: Add config for openai
-					} satisfies OpenAIResponsesProviderOptions,
-				},
-			};
-		}
-
-		// Fall back to environment variables
-		if (process.env.ANTHROPIC_API_KEY) {
-			const provider = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-			return {
-				model: provider.chat('claude-opus-4-5'),
-				providerOptions: {
-					anthropic: {
-						disableParallelToolUse: false,
-						thinking: {
-							type: 'enabled',
-							budgetTokens: 12_000,
-						},
-					} satisfies AnthropicProviderOptions,
-				},
-			};
-		}
-
-		if (process.env.OPENAI_API_KEY) {
-			const provider = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
-			return {
-				model: provider.chat('gpt-5.1'),
-				providerOptions: {
-					openai: {
-						// TODO: Add config for openai
-					} satisfies OpenAIResponsesProviderOptions,
-				},
-			};
-		}
-
-		throw new Error(
-			'No LLM API key found. Configure API keys in project settings or set ANTHROPIC_API_KEY/OPENAI_API_KEY environment variables.',
-		);
+		const openai = createOpenAI({
+			apiKey,
+			...(baseUrl && { baseURL: baseUrl }),
+		});
+		return {
+			model: openai.responses(modelId),
+			providerOptions: {
+				openai: {} satisfies OpenAIResponsesProviderOptions,
+			},
+		};
 	}
 }
 
@@ -119,6 +159,7 @@ class AgentManager {
 	constructor(
 		readonly chat: AgentChat,
 		modelConfig: Pick<ToolLoopAgentSettings, 'model' | 'providerOptions'>,
+		private readonly _modelSelection: ModelSelection,
 		private readonly _onDispose: () => void,
 		private readonly _abortController: AbortController,
 	) {
@@ -171,6 +212,8 @@ class AgentManager {
 					stopReason,
 					error,
 					tokenUsage,
+					llmProvider: this._modelSelection.provider,
+					llmModelId: this._modelSelection.modelId,
 				});
 				this._onDispose();
 			},

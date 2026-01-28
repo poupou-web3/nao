@@ -2,7 +2,8 @@ import { and, desc, eq } from 'drizzle-orm';
 
 import s, { DBChat, DBChatMessage, DBMessagePart, MessageFeedback, NewChat } from '../db/abstractSchema';
 import { db } from '../db/db';
-import { ListChatResponse, LlmProvider, StopReason, TokenUsage, UIChat, UIMessage } from '../types/chat';
+import { ListChatResponse, StopReason, TokenUsage, UIChat, UIMessage } from '../types/chat';
+import { LlmProvider } from '../types/llm';
 import { convertDBPartToUIPart, mapDBPartsToUIParts, mapUIPartsToDBParts } from '../utils/chatMessagePartMappings';
 import { getErrorMessage } from '../utils/utils';
 import * as llmConfigQueries from './project-llm-config.queries';
@@ -145,7 +146,14 @@ export const createChat = async (newChat: NewChat, message: UIMessage): Promise<
 
 export const upsertMessage = async (
 	message: UIMessage,
-	opts: { chatId: string; stopReason?: StopReason; error?: unknown; tokenUsage?: TokenUsage },
+	opts: {
+		chatId: string;
+		stopReason?: StopReason;
+		error?: unknown;
+		tokenUsage?: TokenUsage;
+		llmProvider?: LlmProvider;
+		llmModelId?: string;
+	},
 ): Promise<void> => {
 	await db.transaction(async (t) => {
 		const [savedMessage] = await t
@@ -156,6 +164,8 @@ export const upsertMessage = async (
 				role: message.role,
 				stopReason: opts.stopReason,
 				errorMessage: getErrorMessage(opts.error),
+				llmProvider: opts.llmProvider,
+				llmModelId: opts.llmModelId,
 			})
 			.onConflictDoNothing({ target: s.chatMessage.id })
 			.returning()
