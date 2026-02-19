@@ -2,6 +2,7 @@ from .base import NaoConfig, NaoConfigError
 from .databases import (
     AnyDatabaseConfig,
     BigQueryConfig,
+    ClickHouseConfig,
     DatabaseType,
     DatabricksConfig,
     DuckDBConfig,
@@ -17,6 +18,7 @@ __all__ = [
     "NaoConfigError",
     "AnyDatabaseConfig",
     "BigQueryConfig",
+    "ClickHouseConfig",
     "DuckDBConfig",
     "DatabricksConfig",
     "SnowflakeConfig",

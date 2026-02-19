@@ -67,7 +67,11 @@ export function SystemPrompt() {
 				</ListItem>
 				<ListItem>
 					Each table have files describing the table schema and the data in the table (like columns.md,
-					preview.md, etc.)
+					preview.md, description.md, indexes.md, etc.)
+				</ListItem>
+				<ListItem>
+					When available, use indexes.md to see how the table is ordered and indexed (ORDER BY, PRIMARY KEY,
+					PARTITION BY) so you can write efficient queries.
 				</ListItem>
 			</List>
 			<Title level={2}>SQL Query Rules</Title>

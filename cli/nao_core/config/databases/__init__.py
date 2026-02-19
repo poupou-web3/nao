@@ -4,6 +4,7 @@ from pydantic import Discriminator, Tag
 
 from .base import DatabaseAccessor, DatabaseConfig, DatabaseType
 from .bigquery import BigQueryConfig
+from .clickhouse import ClickHouseConfig
 from .databricks import DatabricksConfig
 from .duckdb import DuckDBConfig
 from .mssql import MssqlConfig
@@ -18,6 +19,7 @@ from .snowflake import SnowflakeConfig
 AnyDatabaseConfig = Annotated[
     Union[
         Annotated[BigQueryConfig, Tag("bigquery")],
+        Annotated[ClickHouseConfig, Tag("clickhouse")],
         Annotated[DatabricksConfig, Tag("databricks")],
         Annotated[SnowflakeConfig, Tag("snowflake")],
         Annotated[DuckDBConfig, Tag("duckdb")],
@@ -32,6 +34,7 @@ AnyDatabaseConfig = Annotated[
 # Mapping of database type to config class
 DATABASE_CONFIG_CLASSES: dict[DatabaseType, type[DatabaseConfig]] = {
     DatabaseType.BIGQUERY: BigQueryConfig,
+    DatabaseType.CLICKHOUSE: ClickHouseConfig,
     DatabaseType.DUCKDB: DuckDBConfig,
     DatabaseType.DATABRICKS: DatabricksConfig,
     DatabaseType.MSSQL: MssqlConfig,
@@ -46,6 +49,8 @@ def parse_database_config(data: dict) -> DatabaseConfig:
     db_type = data.get("type")
     if db_type == "bigquery":
         return BigQueryConfig.model_validate(data)
+    elif db_type == "clickhouse":
+        return ClickHouseConfig.model_validate(data)
     elif db_type == "duckdb":
         return DuckDBConfig.model_validate(data)
     elif db_type == "databricks":
@@ -65,6 +70,7 @@ def parse_database_config(data: dict) -> DatabaseConfig:
 __all__ = [
     "AnyDatabaseConfig",
     "BigQueryConfig",
+    "ClickHouseConfig",
     "DATABASE_CONFIG_CLASSES",
     "DatabaseAccessor",
     "DatabaseConfig",

@@ -75,3 +75,9 @@ class DatabaseContext:
     def description(self) -> str | None:
         """Return the table description if available."""
         return None
+
+    def indexes(self) -> str | None:
+        """Return index/ordering key information if available (e.g. ORDER BY, PRIMARY KEY, indexes).
+        Used by the indexes.md template so the agent knows how the table is indexed for querying.
+        """
+        return None

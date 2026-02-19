@@ -49,6 +49,9 @@ class SyncTestSpec:
     another_schema: str | None = None
     another_table: str | None = None
 
+    # Whether indexes.md is expected (only ClickHouse has this)
+    expects_indexes: bool = False
+
     @property
     def effective_filter_schema(self) -> str:
         return self.filter_schema or self.primary_schema
@@ -87,7 +90,10 @@ class BaseSyncIntegrationTests:
             table_dir = base / f"table={table}"
             assert table_dir.is_dir()
             files = sorted(f.name for f in table_dir.iterdir())
-            assert files == ["columns.md", "description.md", "preview.md"]
+            expected_files = ["columns.md", "description.md", "preview.md"]
+            if spec.expects_indexes:
+                expected_files.append("indexes.md")
+            assert files == sorted(expected_files)
 
         # "another" schema was NOT synced (only when provider has one)
         if spec.another_schema:
@@ -290,9 +296,13 @@ class BaseSyncIntegrationTests:
         assert (primary_base / f"table={spec.users_table}").is_dir()
         assert (primary_base / f"table={spec.orders_table}").is_dir()
 
+        expected_files = ["columns.md", "description.md", "preview.md"]
+        if spec.expects_indexes:
+            expected_files.append("indexes.md")
+
         for table in (spec.users_table, spec.orders_table):
             files = sorted(f.name for f in (primary_base / f"table={table}").iterdir())
-            assert files == ["columns.md", "description.md", "preview.md"]
+            assert files == sorted(expected_files)
 
         # Another schema
         another_base = output / f"type={spec.db_type}" / f"database={db_name}" / f"schema={spec.another_schema}"
@@ -300,7 +310,7 @@ class BaseSyncIntegrationTests:
         assert (another_base / f"table={spec.another_table}").is_dir()
 
         files = sorted(f.name for f in (another_base / f"table={spec.another_table}").iterdir())
-        assert files == ["columns.md", "description.md", "preview.md"]
+        assert files == sorted(expected_files)
 
         # State
         assert state.schemas_synced == 2

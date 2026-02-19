@@ -14,6 +14,7 @@ class DatabaseType(str, Enum):
     """Supported database types."""
 
     BIGQUERY = "bigquery"
+    CLICKHOUSE = "clickhouse"
     DUCKDB = "duckdb"
     DATABRICKS = "databricks"
     SNOWFLAKE = "snowflake"
@@ -33,6 +34,7 @@ class DatabaseAccessor(str, Enum):
     COLUMNS = "columns"
     DESCRIPTION = "description"
     PREVIEW = "preview"
+    INDEXES = "indexes"
 
 
 class DatabaseConfig(BaseModel, ABC):
@@ -50,8 +52,8 @@ class DatabaseConfig(BaseModel, ABC):
         description="Glob patterns for schemas/tables to exclude (e.g., 'temp_*.*', '*.backup_*')",
     )
     accessors: list[DatabaseAccessor] = Field(
-        default_factory=lambda: list(DatabaseAccessor),
-        description="Which default templates to render per table (e.g., ['columns', 'description']). Defaults to all.",
+        default_factory=lambda: [a for a in DatabaseAccessor if a != DatabaseAccessor.INDEXES],
+        description="Which default templates to render per table (e.g., ['columns', 'description']). Defaults to all except indexes.",
     )
 
     @classmethod
@@ -74,9 +76,22 @@ class DatabaseConfig(BaseModel, ABC):
             return cursor.fetchdf()
         if hasattr(cursor, "to_dataframe"):
             return cursor.to_dataframe()
+        if hasattr(cursor, "to_pandas"):
+            return cursor.to_pandas()
 
-        columns: list[str] = [desc[0] for desc in cursor.description]
-        return pd.DataFrame(cursor.fetchall(), columns=columns)  # type: ignore[arg-type]
+        # ClickHouse (clickhouse_connect) returns QueryResult with result_rows + column_names
+        if hasattr(cursor, "result_rows") and hasattr(cursor, "column_names"):
+            columns = list(cursor.column_names)
+            return pd.DataFrame(cursor.result_rows, columns=columns)  # type: ignore[arg-type]
+
+        if hasattr(cursor, "description") and hasattr(cursor, "fetchall"):
+            columns = [desc[0] for desc in cursor.description]
+            return pd.DataFrame(cursor.fetchall(), columns=columns)  # type: ignore[arg-type]
+
+        raise TypeError(
+            f"Unsupported raw_sql result type: {type(cursor).__name__}. "
+            "Expected cursor with fetchdf, to_dataframe, to_pandas, result_rows/column_names, or description/fetchall."
+        )
 
     def matches_pattern(self, schema: str, table: str) -> bool:
         """Check if a schema.table matches the include/exclude patterns.

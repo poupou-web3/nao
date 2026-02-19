@@ -1,0 +1,29 @@
+{#
+  Template: indexes.md.j2
+  Description: Documents the table's ordering key, primary key, partition key, and indexes.
+  Used by the agent to write efficient queries (filter on key columns, use indexed columns).
+
+  Available context:
+    - table_name (str): Name of the table
+    - dataset (str): Schema/dataset name
+    - db (DatabaseContext): Database context with helper methods
+        - db.indexes() -> str or None (ordering/index/partition info; ClickHouse: full DDL)
+#}
+# {{ table_name }} — Indexes & table definition
+
+**Dataset:** `{{ dataset }}`
+
+{% if db.indexes() %}
+## Indexes and table definition
+
+Use this when writing queries: filter on key/indexed columns when possible for best performance.
+
+- Full `CREATE TABLE` DDL (ORDER BY, PRIMARY KEY, PARTITION BY, data skipping indexes).
+
+```
+{{ db.indexes() }}
+```
+
+{% else %}
+_No index information available for this database type._
+{% endif %}
