@@ -13,7 +13,8 @@
 
 **Dataset:** `{{ dataset }}`
 
-{% if db.indexes() %}
+{% set indexes = db.indexes() %}
+{% if indexes %}
 ## Indexes and table definition
 
 Use this when writing queries: filter on key/indexed columns when possible for best performance.
@@ -21,7 +22,7 @@ Use this when writing queries: filter on key/indexed columns when possible for b
 - Full `CREATE TABLE` DDL (ORDER BY, PRIMARY KEY, PARTITION BY, data skipping indexes).
 
 ```
-{{ db.indexes() }}
+{{ indexes }}
 ```
 
 {% else %}

@@ -84,7 +84,7 @@ class DatabaseConfig(BaseModel, ABC):
             columns = list(cursor.column_names)
             return pd.DataFrame(cursor.result_rows, columns=columns)  # type: ignore[arg-type]
 
-        if hasattr(cursor, "description") and hasattr(cursor, "fetchall"):
+        if hasattr(cursor, "description") and cursor.description is not None and hasattr(cursor, "fetchall"):
             columns = [desc[0] for desc in cursor.description]
             return pd.DataFrame(cursor.fetchall(), columns=columns)  # type: ignore[arg-type]
 
