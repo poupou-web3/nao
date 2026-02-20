@@ -1,5 +1,5 @@
 import { WebClient } from '@slack/web-api';
-import { readUIMessageStream, UIDataTypes, UIMessageChunk } from 'ai';
+import { InferUIMessageChunk, readUIMessageStream } from 'ai';
 import { FastifyReply } from 'fastify';
 
 import { User } from '../db/abstractSchema';
@@ -10,7 +10,7 @@ import { get } from '../queries/user.queries';
 import { UIChat } from '../types/chat';
 import { UIMessage } from '../types/chat';
 import { SlackEvent } from '../types/slack';
-import { extractLastTextFromMessage } from '../utils/chat';
+import { extractLastTextFromMessage } from '../utils/ai';
 import { addButtonStopBlock } from '../utils/slack';
 import { agentService } from './agent.service';
 
@@ -131,13 +131,13 @@ export class SlackService {
 	}
 
 	private async _readStreamAndUpdateSlackMessage(
-		stream: ReadableStream<UIMessageChunk<unknown, UIDataTypes>>,
+		stream: ReadableStream<InferUIMessageChunk<UIMessage>>,
 	): Promise<void> {
 		let lastSentText = '';
 		let currentText = '';
 		const messageTs = this._initialMessageTs || this._threadTs;
 
-		for await (const uiMessage of readUIMessageStream({ stream })) {
+		for await (const uiMessage of readUIMessageStream<UIMessage>({ stream })) {
 			const text = extractLastTextFromMessage(uiMessage);
 			if (!text) {
 				continue;

@@ -1,12 +1,23 @@
-import { useQuery } from '@tanstack/react-query';
-import { trpc } from '@/main';
+import { Pencil } from 'lucide-react';
+import { GoogleForm } from './settings-google-form';
+import { Button } from '@/components/ui/button';
+import { useGoogleSettings } from '@/hooks/use-google-settings';
 
 interface GoogleConfigSectionProps {
 	isAdmin: boolean;
 }
 
 export function GoogleConfigSection({ isAdmin }: GoogleConfigSectionProps) {
-	const googleSettings = useQuery(trpc.google.getSettings.queryOptions());
+	const {
+		settings,
+		usingDbOverride,
+		editingState,
+		updatePending,
+		updateError,
+		handleSubmit,
+		handleCancel,
+		handleEdit,
+	} = useGoogleSettings();
 
 	const maskCredential = (value: string) => {
 		if (!value) {
@@ -18,37 +29,50 @@ export function GoogleConfigSection({ isAdmin }: GoogleConfigSectionProps) {
 		return `${value.slice(0, 4)}••••${value.slice(-4)}`;
 	};
 
+	if (!isAdmin) {
+		return <p className='text-sm text-muted-foreground'>Contact your admin to update Google OAuth settings.</p>;
+	}
+
+	if (editingState?.isEditing) {
+		return (
+			<GoogleForm
+				hasExistingCredentials={!!settings?.clientId}
+				initialAuthDomains={settings?.authDomains ?? ''}
+				onSubmit={handleSubmit}
+				onCancel={handleCancel}
+				isPending={updatePending}
+				error={updateError}
+			/>
+		);
+	}
+
+	const badge = usingDbOverride ? 'DB' : 'ENV';
+
 	return (
-		<div className='grid gap-4'>
-			{isAdmin && (
-				<button type='button' className='w-full text-left'>
-					<div className='flex items-center gap-4 p-4 rounded-lg border border-border bg-muted/30 hover:bg-muted/50 transition-colors'>
-						<div className='flex-1 grid gap-1'>
-							<div className='flex items-center gap-2'>
-								<span className='text-sm font-medium text-foreground'>Google OAuth</span>
-								<span className='text-xs text-muted-foreground'>(Override Env)</span>
-							</div>
-							<div className='grid gap-0.5'>
-								<span className='text-xs font-mono text-muted-foreground'>
-									Client ID: {maskCredential(googleSettings.data?.clientId || '')}
-								</span>
-								{googleSettings.data?.authDomains && (
-									<span className='text-xs text-muted-foreground'>
-										Domains: {googleSettings.data.authDomains}
-									</span>
-								)}
-							</div>
-						</div>
-						<span className='px-2 py-0.5 text-xs font-medium rounded bg-muted text-muted-foreground'>
-							ENV
+		<div className='p-4 rounded-lg border border-border bg-muted/30'>
+			<div className='flex items-center gap-4'>
+				<div className='flex-1 grid gap-1'>
+					<div className='flex items-center gap-2'>
+						<span className='text-sm font-medium text-foreground'>Google OAuth</span>
+						<span className='px-1.5 py-0.5 text-[10px] font-medium rounded bg-muted text-muted-foreground'>
+							{badge}
 						</span>
 					</div>
-				</button>
-			)}
-
-			{!isAdmin && (
-				<p className='text-sm text-muted-foreground'>Contact your admin to update Google OAuth settings.</p>
-			)}
+					<div className='grid gap-0.5'>
+						<span className='text-xs font-mono text-muted-foreground'>
+							Client ID: {maskCredential(settings?.clientId || '')}
+						</span>
+						{settings?.authDomains && (
+							<span className='text-xs text-muted-foreground'>Domains: {settings.authDomains}</span>
+						)}
+					</div>
+				</div>
+				{isAdmin && (
+					<Button variant='ghost' size='icon-sm' onClick={handleEdit}>
+						<Pencil className='size-3 text-muted-foreground' />
+					</Button>
+				)}
+			</div>
 		</div>
 	);
 }

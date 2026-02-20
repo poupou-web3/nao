@@ -17,11 +17,28 @@ export type ProviderSettings = { apiKey: string; baseURL?: string };
 export const LLM_PROVIDERS: LlmProvidersType = {
 	anthropic: {
 		envVar: 'ANTHROPIC_API_KEY',
+		extractorModelId: 'claude-haiku-4-5',
 		models: [
+			{
+				id: 'claude-sonnet-4-6',
+				name: 'Claude Sonnet 4.6',
+				default: true,
+				config: {
+					thinking: {
+						type: 'enabled' as const,
+						budgetTokens: 12_000,
+					},
+				},
+				costPerM: {
+					inputNoCache: 3,
+					inputCacheRead: 0.3,
+					inputCacheWrite: 3.75,
+					output: 15,
+				},
+			},
 			{
 				id: 'claude-sonnet-4-5',
 				name: 'Claude Sonnet 4.5',
-				default: true,
 				config: {
 					thinking: {
 						type: 'enabled' as const,
@@ -81,6 +98,7 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 	},
 	openai: {
 		envVar: 'OPENAI_API_KEY',
+		extractorModelId: 'gpt-5-mini',
 		models: [
 			{
 				id: 'gpt-5.2',
@@ -102,6 +120,7 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 	},
 	google: {
 		envVar: 'GEMINI_API_KEY',
+		extractorModelId: 'gemini-2.5-flash',
 		models: [
 			{
 				id: 'gemini-3-pro-preview',
@@ -130,6 +149,7 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 	},
 	mistral: {
 		envVar: 'MISTRAL_API_KEY',
+		extractorModelId: 'mistral-medium-latest',
 		models: [
 			{
 				id: 'mistral-medium-latest',
@@ -146,6 +166,7 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 	},
 	openrouter: {
 		envVar: 'OPENROUTER_API_KEY',
+		extractorModelId: 'anthropic/claude-haiku-4.5',
 		models: [
 			{
 				id: 'moonshotai/kimi-k2.5',
@@ -194,10 +215,6 @@ const DEFAULT_PROVIDER_OPTIONS: { [P in LlmProvider]?: ProviderConfigMap[P] } = 
 		disableParallelToolUse: false,
 		contextManagement: {
 			edits: [
-				{
-					type: 'clear_thinking_20251015',
-					keep: { type: 'thinking_turns', value: 2 },
-				},
 				{
 					type: 'clear_tool_uses_20250919',
 					trigger: {

@@ -83,6 +83,14 @@ export const getAllUsersWithRoles = async (projectId: string): Promise<UserWithR
 	return results;
 };
 
+export const getDefaultProject = async (): Promise<DBProject | null> => {
+	const projectPath = env.NAO_DEFAULT_PROJECT_PATH;
+	if (!projectPath) {
+		return null;
+	}
+	return getProjectByPath(projectPath);
+};
+
 export const checkUserHasProject = async (userId: string): Promise<DBProject | null> => {
 	const projectPath = env.NAO_DEFAULT_PROJECT_PATH;
 	if (!projectPath) {
@@ -117,4 +125,30 @@ export const getAgentSettings = async (projectId: string): Promise<AgentSettings
 export const updateAgentSettings = async (projectId: string, settings: AgentSettings): Promise<AgentSettings> => {
 	await db.update(s.project).set({ agentSettings: settings }).where(eq(s.project.id, projectId)).execute();
 	return settings;
+};
+
+export const getEnabledToolsAndKnownServers = async (
+	projectId: string,
+): Promise<{ enabledTools: string[]; knownServers: string[] }> => {
+	const project = await getProjectById(projectId);
+	return {
+		enabledTools: project?.enabledMcpTools ?? [],
+		knownServers: project?.knownMcpServers ?? [],
+	};
+};
+
+export const updateEnabledToolsAndKnownServers = async (
+	projectId: string,
+	updater: (current: { enabledTools: string[]; knownServers: string[] }) => {
+		enabledTools: string[];
+		knownServers: string[];
+	},
+): Promise<void> => {
+	const current = await getEnabledToolsAndKnownServers(projectId);
+	const next = updater(current);
+	await db
+		.update(s.project)
+		.set({ enabledMcpTools: next.enabledTools, knownMcpServers: next.knownServers })
+		.where(eq(s.project.id, projectId))
+		.execute();
 };

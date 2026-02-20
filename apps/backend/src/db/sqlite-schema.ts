@@ -1,3 +1,4 @@
+import { type ProviderMetadata } from 'ai';
 import { sql } from 'drizzle-orm';
 import { check, index, integer, primaryKey, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
 
@@ -6,6 +7,7 @@ import { StopReason, ToolState, UIMessagePartType } from '../types/chat';
 import { LlmProvider } from '../types/llm';
 import { ORG_ROLES } from '../types/organization';
 import { USER_ROLES } from '../types/project';
+import { MEMORY_CATEGORIES } from '../utils/memory';
 
 export const user = sqliteTable('user', {
 	id: text('id').primaryKey(),
@@ -142,6 +144,8 @@ export const project = sqliteTable(
 		slackBotToken: text('slack_bot_token'),
 		slackSigningSecret: text('slack_signing_secret'),
 		agentSettings: text('agent_settings', { mode: 'json' }).$type<AgentSettings>(),
+		enabledMcpTools: text('enabled_tools', { mode: 'json' }).$type<string[]>().notNull().default([]),
+		knownMcpServers: text('known_mcp_servers', { mode: 'json' }).$type<string[]>().notNull().default([]),
 		createdAt: integer('created_at', { mode: 'timestamp_ms' })
 			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
 			.notNull(),
@@ -205,6 +209,16 @@ export const chatMessage = sqliteTable(
 		createdAt: integer('created_at', { mode: 'timestamp_ms' })
 			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
 			.notNull(),
+
+		// Token usage columns
+		inputTotalTokens: integer('input_total_tokens'),
+		inputNoCacheTokens: integer('input_no_cache_tokens'),
+		inputCacheReadTokens: integer('input_cache_read_tokens'),
+		inputCacheWriteTokens: integer('input_cache_write_tokens'),
+		outputTotalTokens: integer('output_total_tokens'),
+		outputTextTokens: integer('output_text_tokens'),
+		outputReasoningTokens: integer('output_reasoning_tokens'),
+		totalTokens: integer('total_tokens'),
 	},
 	(table) => [
 		index('chat_message_chatId_idx').on(table.chatId),
@@ -231,26 +245,13 @@ export const messagePart = sqliteTable(
 		text: text('text'),
 		reasoningText: text('reasoning_text'),
 
-		// Input tokens columns
-		inputTotalTokens: integer('input_total_tokens'),
-		inputNoCacheTokens: integer('input_no_cache_tokens'),
-		inputCacheReadTokens: integer('input_cache_read_tokens'),
-		inputCacheWriteTokens: integer('input_cache_write_tokens'),
-
-		// Output tokens columns
-		outputTotalTokens: integer('output_total_tokens'),
-		outputTextTokens: integer('output_text_tokens'),
-		outputReasoningTokens: integer('output_reasoning_tokens'),
-
-		// Total tokens column
-		totalTokens: integer('total_tokens'),
-
 		// tool call columns
 		toolCallId: text('tool_call_id'),
 		toolName: text('tool_name'),
 		toolState: text('tool_state').$type<ToolState>(),
 		toolErrorText: text('tool_error_text'),
 		toolInput: text('tool_input', { mode: 'json' }).$type<unknown>(),
+		toolRawInput: text('tool_raw_input', { mode: 'json' }).$type<unknown>(),
 		toolOutput: text('tool_output', { mode: 'json' }).$type<unknown>(),
 		// tool_md_output: text('tool_md_output'),
 
@@ -258,6 +259,10 @@ export const messagePart = sqliteTable(
 		toolApprovalId: text('tool_approval_id'),
 		toolApprovalApproved: integer('tool_approval_approved', { mode: 'boolean' }),
 		toolApprovalReason: text('tool_approval_reason'),
+
+		// provider metadata columns
+		toolProviderMetadata: text('tool_provider_metadata', { mode: 'json' }).$type<ProviderMetadata>(),
+		providerMetadata: text('provider_metadata', { mode: 'json' }).$type<ProviderMetadata>(),
 	},
 	(t) => [
 		index('parts_message_id_idx').on(t.messageId),
@@ -356,4 +361,27 @@ export const projectSavedPrompt = sqliteTable(
 			.notNull(),
 	},
 	(t) => [index('project_saved_prompt_projectId_idx').on(t.projectId)],
+);
+
+export const memories = sqliteTable(
+	'memories',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		content: text('content').notNull(),
+		category: text('category', { enum: MEMORY_CATEGORIES }).notNull(),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+		updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.$onUpdate(() => new Date())
+			.notNull(),
+		chatId: text('chat_id').references(() => chat.id, { onDelete: 'set null' }),
+	},
+	(t) => [index('memories_userId_idx').on(t.userId), index('memories_chatId_idx').on(t.chatId)],
 );

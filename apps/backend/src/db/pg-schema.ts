@@ -1,3 +1,4 @@
+import { type ProviderMetadata } from 'ai';
 import { sql } from 'drizzle-orm';
 import {
 	boolean,
@@ -17,6 +18,7 @@ import { StopReason, ToolState, UIMessagePartType } from '../types/chat';
 import { LlmProvider } from '../types/llm';
 import { ORG_ROLES } from '../types/organization';
 import { USER_ROLES } from '../types/project';
+import { MEMORY_CATEGORIES } from '../utils/memory';
 
 export const user = pgTable('user', {
 	id: text('id').primaryKey(),
@@ -136,6 +138,8 @@ export const project = pgTable(
 		slackBotToken: text('slack_bot_token'),
 		slackSigningSecret: text('slack_signing_secret'),
 		agentSettings: jsonb('agent_settings').$type<AgentSettings>(),
+		enabledMcpTools: jsonb('enabled_tools').$type<string[]>().notNull().default([]),
+		knownMcpServers: jsonb('known_mcp_servers').$type<string[]>().notNull().default([]),
 		createdAt: timestamp('created_at').defaultNow().notNull(),
 		updatedAt: timestamp('updated_at')
 			.defaultNow()
@@ -193,6 +197,16 @@ export const chatMessage = pgTable(
 		llmProvider: text('llm_provider').$type<LlmProvider>(),
 		llmModelId: text('llm_model_id'),
 		createdAt: timestamp('created_at').defaultNow().notNull(),
+
+		// Token usage columns
+		inputTotalTokens: integer('input_total_tokens'),
+		inputNoCacheTokens: integer('input_no_cache_tokens'),
+		inputCacheReadTokens: integer('input_cache_read_tokens'),
+		inputCacheWriteTokens: integer('input_cache_write_tokens'),
+		outputTotalTokens: integer('output_total_tokens'),
+		outputTextTokens: integer('output_text_tokens'),
+		outputReasoningTokens: integer('output_reasoning_tokens'),
+		totalTokens: integer('total_tokens'),
 	},
 	(table) => [
 		index('chat_message_chatId_idx').on(table.chatId),
@@ -217,32 +231,23 @@ export const messagePart = pgTable(
 		text: text('text'),
 		reasoningText: text('reasoning_text'),
 
-		// Input tokens columns
-		inputTotalTokens: integer('input_total_tokens'),
-		inputNoCacheTokens: integer('input_no_cache_tokens'),
-		inputCacheReadTokens: integer('input_cache_read_tokens'),
-		inputCacheWriteTokens: integer('input_cache_write_tokens'),
-
-		// Output tokens columns
-		outputTotalTokens: integer('output_total_tokens'),
-		outputTextTokens: integer('output_text_tokens'),
-		outputReasoningTokens: integer('output_reasoning_tokens'),
-
-		// Total tokens column
-		totalTokens: integer('total_tokens'),
-
 		// tool call columns
 		toolCallId: text('tool_call_id'),
 		toolName: text('tool_name'),
 		toolState: text('tool_state').$type<ToolState>(),
 		toolErrorText: text('tool_error_text'),
 		toolInput: jsonb('tool_input').$type<unknown>(),
+		toolRawInput: jsonb('tool_raw_input').$type<unknown>(),
 		toolOutput: jsonb('tool_output').$type<unknown>(),
 
 		// tool approval columns
 		toolApprovalId: text('tool_approval_id'),
 		toolApprovalApproved: boolean('tool_approval_approved'),
 		toolApprovalReason: text('tool_approval_reason'),
+
+		// provider metadata columns
+		toolProviderMetadata: jsonb('tool_provider_metadata').$type<ProviderMetadata>(),
+		providerMetadata: jsonb('provider_metadata').$type<ProviderMetadata>(),
 	},
 	(t) => [
 		index('parts_message_id_idx').on(t.messageId),
@@ -333,4 +338,25 @@ export const projectSavedPrompt = pgTable(
 			.notNull(),
 	},
 	(t) => [index('project_saved_prompt_projectId_idx').on(t.projectId)],
+);
+
+export const memories = pgTable(
+	'memories',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		content: text('content').notNull(),
+		category: text('category', { enum: MEMORY_CATEGORIES }).notNull(),
+		createdAt: timestamp('created_at').defaultNow().notNull(),
+		updatedAt: timestamp('updated_at')
+			.defaultNow()
+			.$onUpdate(() => new Date())
+			.notNull(),
+		chatId: text('chat_id').references(() => chat.id, { onDelete: 'set null' }),
+	},
+	(t) => [index('memories_userId_idx').on(t.userId), index('memories_chatId_idx').on(t.chatId)],
 );

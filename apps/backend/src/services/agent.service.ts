@@ -3,7 +3,9 @@ import {
 	createUIMessageStream,
 	FinishReason,
 	hasToolCall,
+	InferUIMessageChunk,
 	ModelMessage,
+	pruneMessages,
 	StreamTextResult,
 	ToolLoopAgent,
 	ToolLoopAgentSettings,
@@ -16,13 +18,21 @@ import { renderToMarkdown } from '../lib/markdown';
 import * as chatQueries from '../queries/chat.queries';
 import * as projectQueries from '../queries/project.queries';
 import * as llmConfigQueries from '../queries/project-llm-config.queries';
-import { AgentSettings } from '../types/agent-settings';
 import { Mention, TokenCost, TokenUsage, UIChat, UIMessage } from '../types/chat';
-import { convertToCost, convertToTokenUsage, findLastUserMessage, retrieveProjectById } from '../utils/chat';
+import { ToolContext } from '../types/tools';
+import {
+	convertToCost,
+	convertToTokenUsage,
+	findLastUserMessage,
+	getLastUserMessageText,
+	retrieveProjectById,
+} from '../utils/ai';
 import { getDefaultModelId, getEnvApiKey, getEnvModelSelections, ModelSelection } from '../utils/llm';
+import { memoryService } from './memory';
 import { skillService } from './skill.service';
 
 export type { ModelSelection };
+type AgentTools = Awaited<ReturnType<typeof getTools>>;
 
 export interface AgentRunResult {
 	text: string;
@@ -57,13 +67,16 @@ export class AgentService {
 		const resolvedModelSelection = await this._getResolvedModelSelection(chat.projectId, modelSelection);
 		const modelConfig = await this._getModelConfig(chat.projectId, resolvedModelSelection);
 		const agentSettings = await projectQueries.getAgentSettings(chat.projectId);
+		const toolContext = await this._getToolContext(chat.projectId);
+		const agentTools = getTools(agentSettings);
 		const agent = new AgentManager(
 			chat,
 			modelConfig,
 			resolvedModelSelection,
 			() => this._agents.delete(chat.id),
 			abortController,
-			agentSettings,
+			agentTools,
+			toolContext,
 		);
 		this._agents.set(chat.id, agent);
 		return agent;
@@ -94,6 +107,16 @@ export class AgentService {
 		}
 
 		throw Error('No model config found');
+	}
+
+	private async _getToolContext(projectId: string): Promise<ToolContext> {
+		const project = await retrieveProjectById(projectId);
+		if (!project.path) {
+			throw Error('Project path does not exist.');
+		}
+		return {
+			projectFolder: project.path ?? '',
+		};
 	}
 
 	private _disposeAgent(chatId: string): void {
@@ -137,25 +160,26 @@ export class AgentService {
 }
 
 class AgentManager {
-	private readonly _agent: ToolLoopAgent<never, ReturnType<typeof getTools>, never>;
+	private readonly _agent: ToolLoopAgent<never, AgentTools, never>;
 
 	constructor(
 		readonly chat: AgentChat,
-		modelConfig: Pick<ToolLoopAgentSettings, 'model' | 'providerOptions'>,
+		private readonly _modelConfig: Pick<ToolLoopAgentSettings, 'model' | 'providerOptions'>,
 		private readonly _modelSelection: ModelSelection,
 		private readonly _onDispose: () => void,
 		private readonly _abortController: AbortController,
-		agentSettings: AgentSettings | null,
+		private readonly _agentTools: AgentTools,
+		private readonly _toolContext: ToolContext,
 	) {
 		this._agent = new ToolLoopAgent({
-			...modelConfig,
-			tools: getTools(agentSettings),
+			...this._modelConfig,
+			tools: this._agentTools,
 			maxOutputTokens: 16_000,
-			// On step 1+: cache user message (stable) + current step's last message (loop leaf)
-			prepareStep: ({ messages }) => {
-				return { messages: this._addCache(messages) };
-			},
+			prepareStep: ({ messages }) => ({
+				messages: this._addCache(this._pruneMessages(messages)),
+			}),
 			stopWhen: [hasToolCall('suggest_follow_ups')],
+			experimental_context: this._toolContext,
 		});
 	}
 
@@ -165,9 +189,9 @@ class AgentManager {
 			sendNewChatData: boolean;
 			mentions?: Mention[];
 		},
-	): ReadableStream {
+	): ReadableStream<InferUIMessageChunk<UIMessage>> {
 		let error: unknown = undefined;
-		let result: StreamTextResult<ReturnType<typeof getTools>, never>;
+		let result: StreamTextResult<AgentTools, never>;
 
 		return createUIMessageStream<UIMessage>({
 			generateId: () => crypto.randomUUID(),
@@ -184,19 +208,15 @@ class AgentManager {
 					});
 				}
 
-				// Fetch project path and run agent within project context
-				const project = await retrieveProjectById(this.chat.projectId);
-
 				const messages = await this._buildModelMessages(uiMessages, opts.mentions);
 
 				result = await this._agent.stream({
 					messages,
 					abortSignal: this._abortController.signal,
-					// @ts-expect-error - experimental_context is not yet in the types
-					experimental_context: {
-						projectFolder: project.path,
-					},
 				});
+
+				// Extract memory immediately after the request to the agent is sent
+				this._scheduleMemoryExtraction(uiMessages);
 
 				writer.merge(result.toUIMessageStream({}));
 			},
@@ -215,9 +235,37 @@ class AgentManager {
 					llmProvider: this._modelSelection.provider,
 					llmModelId: this._modelSelection.modelId,
 				});
+
 				this._onDispose();
 			},
 		});
+	}
+
+	/**
+	 * Prepares the UI messages and builds them into model messages with memory.
+	 */
+	private async _buildModelMessages(uiMessages: UIMessage[], mentions?: Mention[]): Promise<ModelMessage[]> {
+		uiMessages = this._addSkills(uiMessages, mentions);
+		uiMessages = this._fillEmptyAssistantTurns(uiMessages, '[NO CONTENT]');
+		const modelMessages = await convertToModelMessages(uiMessages);
+		const memories = await memoryService.safeGetUserMemories(this.chat.userId, this.chat.id);
+		const systemPrompt = renderToMarkdown(SystemPrompt({ memories }));
+		const systemMessage: ModelMessage = { role: 'system', content: systemPrompt };
+		modelMessages.unshift(systemMessage);
+		return modelMessages;
+	}
+
+	private _scheduleMemoryExtraction(uiMessages: UIMessage[]): void {
+		const lastUserText = getLastUserMessageText(uiMessages);
+		if (lastUserText) {
+			memoryService.safeScheduleMemoryExtraction({
+				userId: this.chat.userId,
+				projectId: this.chat.projectId,
+				chatId: this.chat.id,
+				userMessage: lastUserText,
+				provider: this._modelSelection.provider,
+			});
+		}
 	}
 
 	private async _getTotalUsage(
@@ -264,35 +312,16 @@ class AgentManager {
 		this._abortController.abort();
 	}
 
-	/** Builds and prepares the UI messages into model messages */
-	private async _buildModelMessages(uiMessages: UIMessage[], mentions?: Mention[]): Promise<ModelMessage[]> {
-		uiMessages = this._prepareUIMessages(uiMessages, mentions);
-		const modelMessages = await convertToModelMessages(uiMessages);
-		const systemPrompt = renderToMarkdown(SystemPrompt());
-		const systemMessage: ModelMessage = { role: 'system', content: systemPrompt };
-		modelMessages.unshift(systemMessage);
-		return modelMessages;
-	}
-
-	private _prepareUIMessages(messages: UIMessage[], mentions?: Mention[]): UIMessage[] {
-		messages = this._addSkills(messages, mentions);
-
+	private _fillEmptyAssistantTurns(messages: UIMessage[], fillText: string): UIMessage[] {
 		return messages.map((msg) => {
 			if (msg.role !== 'assistant') {
 				return msg;
 			}
-
 			const hasTextPart = msg.parts.some((part) => part.type === 'text');
 			if (!hasTextPart) {
-				msg.parts.push({ type: 'text', text: '[NO CONTENT]' });
+				msg.parts.push({ type: 'text', text: fillText });
 			}
-
-			const filteredParts = msg.parts.filter((part) => part.type !== 'tool-suggest_follow_ups');
-			if (filteredParts.length === msg.parts.length) {
-				return msg;
-			}
-
-			return { ...msg, parts: filteredParts };
+			return msg;
 		});
 	}
 
@@ -307,8 +336,8 @@ class AgentManager {
 			return messages;
 		}
 
-		const { message: lastUserMessage, index: lastUserMessageIndex } = findLastUserMessage(messages);
-		if (lastUserMessageIndex === -1) {
+		const [lastUserMessage, lastUserMessageIndex] = findLastUserMessage(messages);
+		if (!lastUserMessage) {
 			return messages;
 		}
 
@@ -350,6 +379,18 @@ class AgentManager {
 			messages[lastIndex] = withCache(messages[lastIndex], CACHE_5M);
 		}
 		return messages;
+	}
+
+	/**
+	 * Prunes certain messages parts like reasoning and tool calls from the conversation.
+	 */
+	private _pruneMessages(messages: ModelMessage[]): ModelMessage[] {
+		return pruneMessages({
+			messages,
+			reasoning: 'before-last-message',
+			toolCalls: [{ tools: ['suggest_follow_ups'], type: 'all' }],
+			emptyMessages: 'remove',
+		});
 	}
 
 	getModelId(): string {
