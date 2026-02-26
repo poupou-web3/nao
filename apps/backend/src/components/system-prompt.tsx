@@ -9,6 +9,7 @@ import { groupBy } from '../utils/utils';
 export function SystemPrompt({ memories = [] }: { memories: UserMemory[] }) {
 	const userRules = getUserRules();
 	const connections = getConnections();
+	const hasClickHouse = connections?.some((c) => c.type.toLowerCase() === 'clickhouse') ?? false;
 	const skills = skillService.getSkills();
 	const visibleMemories = getMemoriesInTokenRange(memories, MEMORY_TOKEN_LIMIT);
 
@@ -75,12 +76,14 @@ export function SystemPrompt({ memories = [] }: { memories: UserMemory[] }) {
 				</ListItem>
 				<ListItem>
 					Each table have files describing the table schema and the data in the table (like columns.md,
-					preview.md, description.md, indexes.md, etc.)
+					preview.md, description.md, etc.)
 				</ListItem>
-				<ListItem>
-					When available, use indexes.md to see how the table is ordered and indexed (ORDER BY, PRIMARY KEY,
-					PARTITION BY) so you can write efficient queries.
-				</ListItem>
+				{hasClickHouse && (
+					<ListItem>
+						When available, use indexes.md to see how the table is ordered and indexed (ORDER BY, PRIMARY
+						KEY, PARTITION BY) so you can write efficient queries.
+					</ListItem>
+				)}
 			</List>
 
 			<Title level={2}>SQL Query Rules</Title>

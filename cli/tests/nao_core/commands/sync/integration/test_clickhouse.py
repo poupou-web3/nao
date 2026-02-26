@@ -156,9 +156,9 @@ def spec(temp_database):
             "- user_id",
             "- amount",
         ),
-        # ClickHouse context returns pointer to indexes.md; description.md renders that, not DDL
-        users_table_description="indexes.md",
-        orders_table_description="indexes.md",
+        # description.md: users has a table comment (see COMMENT in dml/clickhouse.sql), orders has none
+        users_table_description="User accounts and profile data",
+        orders_table_description=None,
         users_preview_rows=[
             {"id": 1, "name": "Alice", "email": "alice@example.com", "active": 1},
             {"id": 2, "name": "Bob", "email": None, "active": 0},

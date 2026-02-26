@@ -9,7 +9,8 @@ CREATE TABLE users (
     email Nullable(String),
     active UInt8
 ) ENGINE = MergeTree()
-ORDER BY (id);
+ORDER BY (id)
+COMMENT 'User accounts and profile data';
 
 INSERT INTO users (id, name, email, active) VALUES
     (1, 'Alice', 'alice@example.com', 1),

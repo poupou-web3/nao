@@ -76,8 +76,6 @@ class DatabaseConfig(BaseModel, ABC):
             return cursor.fetchdf()
         if hasattr(cursor, "to_dataframe"):
             return cursor.to_dataframe()
-        if hasattr(cursor, "to_pandas"):
-            return cursor.to_pandas()
 
         # ClickHouse (clickhouse_connect) returns QueryResult with result_rows + column_names
         if hasattr(cursor, "result_rows") and hasattr(cursor, "column_names"):

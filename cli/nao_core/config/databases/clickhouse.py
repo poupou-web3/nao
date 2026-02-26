@@ -100,6 +100,25 @@ def _raw_sql_to_rows(cursor: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _get_table_comment(conn: BaseBackend, database: str, table_name: str) -> str | None:
+    """Return the table comment from system.tables, or None if missing or on error."""
+    try:
+        # Prevent SQL injection by escaping single quotes
+        d = database.replace("\\", "\\\\").replace("'", "''")
+        t = table_name.replace("\\", "\\\\").replace("'", "''")
+        sql = f"SELECT comment FROM system.tables WHERE database = '{d}' AND name = '{t}'"
+        cursor = conn.raw_sql(sql)  # type: ignore[union-attr]
+        rows = _raw_sql_to_rows(cursor)
+        if not rows:
+            return None
+        comment = rows[0].get("comment")
+        if not comment:
+            return None
+        return str(comment).strip() or None
+    except Exception:
+        return None
+
+
 def _columns_from_system(conn: BaseBackend, database: str, table_name: str) -> list[dict[str, Any]]:
     """Return column metadata from system.columns (does not SELECT from the table)."""
     try:
@@ -139,11 +158,7 @@ class ClickHouseDatabaseContext(DatabaseContext):
         self._direct_select_disallowed: bool = False
 
     def description(self) -> str | None:
-        """Return a short pointer to indexes.md; full DDL is only in indexes.md to avoid duplication."""
-        return (
-            "Full table definition (CREATE TABLE with ORDER BY, PRIMARY KEY, PARTITION BY, indexes): "
-            "see **indexes.md** in this folder."
-        )
+        return _get_table_comment(self._conn, self._schema, self._table_name)
 
     def indexes(self) -> str | None:
         """Return table DDL (SHOW CREATE TABLE) so the agent sees ORDER BY, PRIMARY KEY, PARTITION BY, and indexes."""
@@ -181,7 +196,7 @@ class ClickHouseDatabaseContext(DatabaseContext):
     def columns(self) -> list[dict[str, Any]]:
         """Return column metadata; for stream-like engines use system.columns (no SELECT from table)."""
         if self._direct_select_disallowed:
-            return _columns_from_system(self._conn, self._schema, self._table_name)
+            return []
         try:
             schema = self.table.schema()
             return [
