@@ -174,7 +174,6 @@ def spec(temp_database):
         schema_field="schemas_include",
         another_schema="default",
         another_table="nonexistent",
-        expects_indexes=True,  # ClickHouse generates indexes.md
     )
 
 
@@ -193,7 +192,7 @@ class TestClickHouseSyncIntegration(BaseSyncIntegrationTests):
         assert spec.users_table in synced_tables
         assert spec.orders_table in synced_tables
 
-        # Extra tables exercising different engine types (users_dict is a dictionary — sync generates description/indexes)
+        # Extra tables exercising different engine types (users_dict is a dictionary)
         expected_engine_tables = {
             "orders_summing",  # SummingMergeTree
             "events_replacing",  # ReplacingMergeTree
@@ -220,22 +219,20 @@ class TestClickHouseSyncIntegration(BaseSyncIntegrationTests):
         # One schema synced; excluding orders still leaves users + engine tables (e.g. orders_summing, events_replacing)
         assert state.tables_synced >= 2
 
-    def test_dictionary_sync_generates_description_and_metadata(self, synced, spec):
-        """Sync must generate description.md and indexes.md for dictionaries (important ClickHouse optimisation)."""
+    def test_dictionary_sync_generates_description_with_index_metadata(self, synced, spec):
+        """Sync must generate description.md containing dictionary DDL metadata."""
         _, output, config = synced
         base = self._base_path(output, config, spec)
         table_dir = base / "table=users_dict"
         assert table_dir.is_dir(), "users_dict table dir should exist after sync"
         description_md = table_dir / "description.md"
-        indexes_md = table_dir / "indexes.md"
         assert description_md.exists(), "description.md must be generated for dictionary"
-        assert indexes_md.exists(), "indexes.md must be generated for dictionary"
-        idx_content = indexes_md.read_text()
+        idx_content = description_md.read_text()
         assert "CREATE DICTIONARY" in idx_content or "create dictionary" in idx_content.lower(), (
-            "indexes.md should contain CREATE DICTIONARY DDL"
+            "description.md should contain CREATE DICTIONARY DDL"
         )
         assert "SOURCE" in idx_content and "LAYOUT" in idx_content, (
-            "indexes.md should contain dictionary SOURCE and LAYOUT"
+            "description.md should contain dictionary SOURCE and LAYOUT"
         )
 
     def test_sync_all_schemas(self, tmp_path_factory, db_config, spec):
@@ -258,8 +255,6 @@ class TestClickHouseSyncIntegration(BaseSyncIntegrationTests):
         assert (primary_base / f"table={spec.orders_table}").is_dir()
 
         expected_files = ["columns.md", "description.md", "preview.md"]
-        if spec.expects_indexes:
-            expected_files.append("indexes.md")
 
         for table in (spec.users_table, spec.orders_table):
             files = sorted(f.name for f in (primary_base / f"table={table}").iterdir())

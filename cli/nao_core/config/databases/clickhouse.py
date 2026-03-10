@@ -286,7 +286,7 @@ class ClickHouseConfig(DatabaseConfig):
     )
     accessors: list[DatabaseAccessor] = Field(
         default_factory=lambda: list(DatabaseAccessor),
-        description="Which default templates to render per table. Defaults to all (including indexes).",
+        description="Which default templates to render per table. Defaults to all.",
     )
 
     @classmethod

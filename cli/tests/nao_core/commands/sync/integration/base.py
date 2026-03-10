@@ -49,9 +49,6 @@ class SyncTestSpec:
     another_schema: str | None = None
     another_table: str | None = None
 
-    # Whether indexes.md is expected (only ClickHouse has this)
-    expects_indexes: bool = False
-
     @property
     def effective_filter_schema(self) -> str:
         return self.filter_schema or self.primary_schema
@@ -91,8 +88,6 @@ class BaseSyncIntegrationTests:
             assert table_dir.is_dir()
             files = sorted(f.name for f in table_dir.iterdir())
             expected_files = ["columns.md", "description.md", "preview.md"]
-            if spec.expects_indexes:
-                expected_files.append("indexes.md")
             assert files == sorted(expected_files)
 
         # "another" schema was NOT synced (only when provider has one)
@@ -297,8 +292,6 @@ class BaseSyncIntegrationTests:
         assert (primary_base / f"table={spec.orders_table}").is_dir()
 
         expected_files = ["columns.md", "description.md", "preview.md"]
-        if spec.expects_indexes:
-            expected_files.append("indexes.md")
 
         for table in (spec.users_table, spec.orders_table):
             files = sorted(f.name for f in (primary_base / f"table={table}").iterdir())
