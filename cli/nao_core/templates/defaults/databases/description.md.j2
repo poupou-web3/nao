@@ -25,3 +25,27 @@
 {% else %}
 _No description available._
 {% endif %}
+
+{% set partitions = db.partition_columns() %}
+{% if partitions %}
+## Partition / Clustering columns
+
+{% for col in partitions %}
+- {{ col }}
+{% endfor %}
+
+> When querying this table, always filter on {% for col in partitions %}{{ col }}{% if not loop.last %}, {% endif %}{% endfor %} for best performance.
+
+{% endif %}
+
+{% set indexes = db.indexes() %}
+{% if indexes %}
+## Indexes and table definition
+
+Use this when writing queries: filter on key/indexed columns when possible for best performance.
+
+```
+{{ indexes }}
+```
+
+{% endif %}

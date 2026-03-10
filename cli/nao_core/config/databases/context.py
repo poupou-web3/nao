@@ -78,6 +78,6 @@ class DatabaseContext:
 
     def indexes(self) -> str | None:
         """Return index/ordering key information if available (e.g. ORDER BY, PRIMARY KEY, indexes).
-        Used by the indexes.md template so the agent knows how the table is indexed for querying.
+        Used by table metadata templates so the agent knows how the table is indexed for querying.
         """
         return None

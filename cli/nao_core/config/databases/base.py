@@ -34,7 +34,6 @@ class DatabaseAccessor(str, Enum):
     COLUMNS = "columns"
     DESCRIPTION = "description"
     PREVIEW = "preview"
-    INDEXES = "indexes"
 
 
 class DatabaseConfig(BaseModel, ABC):
@@ -52,8 +51,8 @@ class DatabaseConfig(BaseModel, ABC):
         description="Glob patterns for schemas/tables to exclude (e.g., 'temp_*.*', '*.backup_*')",
     )
     accessors: list[DatabaseAccessor] = Field(
-        default_factory=lambda: [a for a in DatabaseAccessor if a != DatabaseAccessor.INDEXES],
-        description="Which default templates to render per table (e.g., ['columns', 'description']). Defaults to all except indexes.",
+        default_factory=lambda: list(DatabaseAccessor),
+        description="Which default templates to render per table (e.g., ['columns', 'description']). Defaults to all.",
     )
 
     @classmethod
