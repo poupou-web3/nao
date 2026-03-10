@@ -1,15 +1,18 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod/v4';
 
-import { KNOWN_MODELS } from '../agents/providers';
+import { getProviderAuth, KNOWN_MODELS } from '../agents/providers';
 import { env } from '../env';
 import * as projectQueries from '../queries/project.queries';
 import * as llmConfigQueries from '../queries/project-llm-config.queries';
 import * as savedPromptQueries from '../queries/project-saved-prompt.queries';
 import * as slackConfigQueries from '../queries/project-slack-config.queries';
-import { posthog, PostHogEvent } from '../services/posthog.service';
+import { posthog, PostHogEvent } from '../services/posthog';
+import { getAvailableModels as getAvailableTranscribeModels } from '../services/transcribe.service';
+import { AgentSettings } from '../types/agent-settings';
 import { llmConfigSchema, LlmProvider, llmProviderSchema } from '../types/llm';
-import { getEnvApiKey, getEnvProviders, getProjectAvailableModels } from '../utils/llm';
+import { getEnvApiKey, getEnvBaseUrls, getEnvProviders, getProjectAvailableModels } from '../utils/llm';
+import { buildCredentialPreviews } from '../utils/utils';
 import { adminProtectedProcedure, projectProtectedProcedure, publicProcedure } from './trpc';
 
 export const projectRoutes = {
@@ -28,11 +31,12 @@ export const projectRoutes = {
 			z.object({
 				projectConfigs: z.array(llmConfigSchema),
 				envProviders: z.array(llmProviderSchema),
+				envBaseUrls: z.record(z.string(), z.string()),
 			}),
 		)
 		.query(async ({ ctx }) => {
 			if (!ctx.project) {
-				return { projectConfigs: [], envProviders: [] };
+				return { projectConfigs: [], envProviders: [], envBaseUrls: {} };
 			}
 
 			const configs = await llmConfigQueries.getProjectLlmConfigs(ctx.project.id);
@@ -40,14 +44,18 @@ export const projectRoutes = {
 			const projectConfigs = configs.map((c) => ({
 				id: c.id,
 				provider: c.provider as LlmProvider,
-				apiKeyPreview: c.apiKey.slice(0, 8) + '...' + c.apiKey.slice(-4),
+				apiKeyPreview: c.apiKey ? c.apiKey.slice(0, 8) + '...' + c.apiKey.slice(-4) : null,
+				credentialPreviews: buildCredentialPreviews(c.credentials),
 				enabledModels: c.enabledModels ?? [],
 				baseUrl: c.baseUrl ?? null,
 				createdAt: c.createdAt,
 				updatedAt: c.updatedAt,
 			}));
 
-			return { projectConfigs, envProviders: getEnvProviders() };
+			const envProviders = getEnvProviders();
+			const envBaseUrls = getEnvBaseUrls();
+
+			return { projectConfigs, envProviders, envBaseUrls };
 		}),
 
 	/** Get all available models for the current project (for user model selection) */
@@ -57,6 +65,7 @@ export const projectRoutes = {
 				z.object({
 					provider: llmProviderSchema,
 					modelId: z.string(),
+					name: z.string(),
 				}),
 			),
 		)
@@ -71,7 +80,8 @@ export const projectRoutes = {
 		.input(
 			z.object({
 				provider: llmProviderSchema,
-				apiKey: z.string().min(1).optional(), // Optional - if not provided, uses env var or keeps existing
+				apiKey: z.string().min(1).optional(),
+				credentials: z.record(z.string(), z.string()).optional(),
 				enabledModels: z.array(z.string()).optional(),
 				baseUrl: z.string().url().optional().or(z.literal('')),
 			}),
@@ -81,28 +91,32 @@ export const projectRoutes = {
 			const existingConfig = await llmConfigQueries.getProjectLlmConfigByProvider(ctx.project.id, input.provider);
 			const envApiKey = getEnvApiKey(input.provider);
 
-			// Determine the API key to use:
-			// 1. If apiKey provided in input, use it
-			// 2. If editing existing config and no new key, keep existing (pass null to skip update)
-			// 3. If new config and no key, use env var
+			const hasNewCredentials =
+				input.credentials && Object.keys(input.credentials).some((k) => input.credentials![k]);
+
 			let apiKey: string | null;
 
 			if (input.apiKey) {
-				// New key provided
 				apiKey = input.apiKey;
+			} else if (hasNewCredentials && !input.apiKey) {
+				apiKey = '';
 			} else if (existingConfig) {
-				// Editing - keep existing key (null signals "don't update")
 				apiKey = null;
-			} else if (envApiKey && input.enabledModels && input.enabledModels.length > 0) {
+			} else if (envApiKey) {
 				apiKey = envApiKey;
+			} else if (getProviderAuth(input.provider).apiKey !== 'required') {
+				apiKey = '';
 			} else {
-				throw new Error(`API Key is required for ${input.provider} or select at least one model.`);
+				throw new Error(
+					`API key is required for ${input.provider}. Provide one or set it as an environment variable.`,
+				);
 			}
 
 			const config = await llmConfigQueries.upsertProjectLlmConfig({
 				projectId: ctx.project.id,
 				provider: input.provider,
 				apiKey,
+				credentials: hasNewCredentials ? input.credentials! : undefined,
 				enabledModels: input.enabledModels ?? [],
 				baseUrl: input.baseUrl || null,
 			} as Parameters<typeof llmConfigQueries.upsertProjectLlmConfig>[0]);
@@ -110,7 +124,8 @@ export const projectRoutes = {
 			return {
 				id: config.id,
 				provider: config.provider as LlmProvider,
-				apiKeyPreview: config.apiKey.slice(0, 8) + '...' + config.apiKey.slice(-4),
+				apiKeyPreview: config.apiKey ? config.apiKey.slice(0, 8) + '...' + config.apiKey.slice(-4) : null,
+				credentialPreviews: buildCredentialPreviews(config.credentials),
 				enabledModels: config.enabledModels ?? [],
 				baseUrl: config.baseUrl ?? null,
 			};
@@ -126,25 +141,22 @@ export const projectRoutes = {
 
 	getSlackConfig: projectProtectedProcedure.query(async ({ ctx }) => {
 		if (!ctx.project) {
-			return { projectConfig: null, hasEnvConfig: false };
+			return { projectConfig: null, redirectUrl: '', projectId: '' };
 		}
 
 		const config = await slackConfigQueries.getProjectSlackConfig(ctx.project.id);
-
-		const hasEnvConfig = !!(env.SLACK_BOT_TOKEN && env.SLACK_SIGNING_SECRET);
 
 		const projectConfig = config
 			? {
 					botTokenPreview: config.botToken.slice(0, 4) + '...' + config.botToken.slice(-4),
 					signingSecretPreview: config.signingSecret.slice(0, 4) + '...' + config.signingSecret.slice(-4),
+					modelSelection: config.modelSelection,
 				}
 			: null;
 
-		const baseUrl = env.BETTER_AUTH_URL || '';
 		return {
 			projectConfig,
-			hasEnvConfig,
-			redirectUrl: baseUrl,
+			redirectUrl: env.BETTER_AUTH_URL || '',
 			projectId: ctx.project.id,
 		};
 	}),
@@ -154,6 +166,8 @@ export const projectRoutes = {
 			z.object({
 				botToken: z.string().min(1),
 				signingSecret: z.string().min(1),
+				modelProvider: llmProviderSchema.optional(),
+				modelId: z.string().optional(),
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
@@ -161,11 +175,36 @@ export const projectRoutes = {
 				projectId: ctx.project.id,
 				botToken: input.botToken,
 				signingSecret: input.signingSecret,
+				modelProvider: input.modelProvider,
+				modelId: input.modelId,
 			});
+
+			posthog.capture(ctx.user.id, PostHogEvent.SlackConfigured, {
+				project_id: ctx.project.id,
+				modelProvider: input.modelProvider,
+				modelId: input.modelId,
+			});
+
 			return {
 				botTokenPreview: config.botToken.slice(0, 4) + '...' + config.botToken.slice(-4),
 				signingSecretPreview: config.signingSecret.slice(0, 4) + '...' + config.signingSecret.slice(-4),
+				modelSelection: config.modelSelection,
 			};
+		}),
+
+	updateSlackModelConfig: adminProtectedProcedure
+		.input(
+			z.object({
+				modelProvider: llmProviderSchema.optional(),
+				modelId: z.string().optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			await slackConfigQueries.updateProjectSlackModel(
+				ctx.project.id,
+				input.modelProvider ?? null,
+				input.modelId ?? null,
+			);
 		}),
 
 	deleteSlackConfig: adminProtectedProcedure.mutation(async ({ ctx }) => {
@@ -182,6 +221,10 @@ export const projectRoutes = {
 
 	getKnownModels: publicProcedure.query(() => {
 		return KNOWN_MODELS;
+	}),
+
+	getKnownTranscribeModels: projectProtectedProcedure.query(({ ctx }) => {
+		return getAvailableTranscribeModels(ctx.project.id);
 	}),
 
 	removeProjectMember: adminProtectedProcedure
@@ -259,13 +302,14 @@ export const projectRoutes = {
 			return null;
 		}
 
-		const { isPythonAvailable } = await import('../agents/tools');
+		const { isPythonAvailable, isSandboxAvailable } = await import('../agents/tools');
 		const settings = await projectQueries.getAgentSettings(ctx.project.id);
 
 		return {
 			...settings,
 			capabilities: {
 				pythonSandbox: isPythonAvailable,
+				sandbox: isSandboxAvailable,
 			},
 		};
 	}),
@@ -276,11 +320,51 @@ export const projectRoutes = {
 				experimental: z
 					.object({
 						pythonSandboxing: z.boolean().optional(),
+						sandboxes: z.boolean().optional(),
+					})
+					.optional(),
+				transcribe: z
+					.object({
+						enabled: z.boolean().optional(),
+						provider: z.string().optional(),
+						modelId: z.string().optional(),
+					})
+					.optional(),
+				sql: z.object({ dangerouslyWritePermEnabled: z.boolean().optional() }).optional(),
+				memoryEnabled: z.boolean().optional(),
+				webSearch: z
+					.object({
+						enabled: z.boolean().optional(),
+						mode: z.enum(['provider']).optional(),
 					})
 					.optional(),
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
-			return projectQueries.updateAgentSettings(ctx.project.id, input);
+			const existing = (await projectQueries.getAgentSettings(ctx.project.id)) ?? {};
+			const merged: AgentSettings = {
+				memoryEnabled: input.memoryEnabled ?? existing.memoryEnabled,
+				experimental: { ...existing.experimental, ...input.experimental },
+				transcribe: { ...existing.transcribe, ...input.transcribe },
+				sql: { ...existing.sql, ...input.sql },
+				webSearch: { ...existing.webSearch, ...input.webSearch },
+			};
+			posthog.capture(ctx.user.id, PostHogEvent.ProjectAgentSettingsUpdated, {
+				project_id: ctx.project.id,
+				transcribe_enabled: merged.transcribe?.enabled,
+				transcribe_provider: merged.transcribe?.provider,
+				transcribe_model_id: merged.transcribe?.modelId,
+				sql_dangerously_write_perm_enabled: merged.sql?.dangerouslyWritePermEnabled,
+				python_sandboxing_enabled: merged.experimental?.pythonSandboxing,
+				memory_enabled: merged.memoryEnabled,
+				web_search_enabled: merged.webSearch?.enabled,
+				web_search_mode: merged.webSearch?.mode,
+			});
+			return projectQueries.updateAgentSettings(ctx.project.id, merged);
 		}),
+
+	getMemorySettings: projectProtectedProcedure.query(async ({ ctx }) => {
+		const memoryEnabled = await projectQueries.getProjectMemoryEnabled(ctx.project.id);
+		return { memoryEnabled };
+	}),
 };

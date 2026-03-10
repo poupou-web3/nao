@@ -1,28 +1,58 @@
+import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
 import { type AnthropicProviderOptions, createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createMistral } from '@ai-sdk/mistral';
 import { createOpenAI } from '@ai-sdk/openai';
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import type { LanguageModel } from 'ai';
+import { createOpenRouter, LanguageModelV3 } from '@openrouter/ai-sdk-provider';
+import { createOllama } from 'ai-sdk-ollama';
 
-import type { LlmProvider, LlmProvidersType, ProviderConfigMap } from '../types/llm';
+import type { LlmProvider, LlmProvidersType, ProviderAuth, ProviderConfigMap, ProviderSettings } from '../types/llm';
 
 // See: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
 export const CACHE_1H = { type: 'ephemeral', ttl: '1h' } as const;
 export const CACHE_5M = { type: 'ephemeral' } as const;
 
-export type ProviderSettings = { apiKey: string; baseURL?: string };
-
 /** Provider configuration with env var names and known models */
 export const LLM_PROVIDERS: LlmProvidersType = {
 	anthropic: {
+		create: (settings, modelId) => createAnthropic(settings).chat(modelId),
+		auth: { apiKey: 'required' },
 		envVar: 'ANTHROPIC_API_KEY',
+		baseUrlEnvVar: 'ANTHROPIC_BASE_URL',
 		extractorModelId: 'claude-haiku-4-5',
+		summaryModelId: 'claude-sonnet-4-5',
+		defaultOptions: {
+			disableParallelToolUse: false,
+			contextManagement: {
+				edits: [
+					{
+						type: 'clear_tool_uses_20250919',
+						trigger: {
+							type: 'input_tokens',
+							value: 180_000,
+						},
+						clearToolInputs: false,
+						excludeTools: [
+							'display_chart',
+							'execute_python',
+							'execute_sql',
+							'execute_sandboxed_code',
+							'grep',
+							'list',
+							'read',
+							'search',
+							'story',
+						],
+					},
+				],
+			},
+		} satisfies AnthropicProviderOptions,
 		models: [
 			{
 				id: 'claude-sonnet-4-6',
 				name: 'Claude Sonnet 4.6',
 				default: true,
+				contextWindow: 200_000,
 				config: {
 					thinking: {
 						type: 'enabled' as const,
@@ -39,6 +69,7 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 			{
 				id: 'claude-sonnet-4-5',
 				name: 'Claude Sonnet 4.5',
+				contextWindow: 200_000,
 				config: {
 					thinking: {
 						type: 'enabled' as const,
@@ -53,8 +84,9 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 				},
 			},
 			{
-				id: 'claude-opus-4-5',
-				name: 'Claude Opus 4.5',
+				id: 'claude-opus-4-6',
+				name: 'Claude Opus 4.6',
+				contextWindow: 200_000,
 				config: {
 					thinking: {
 						type: 'enabled' as const,
@@ -69,8 +101,9 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 				},
 			},
 			{
-				id: 'claude-opus-4-6',
-				name: 'Claude Opus 4.6',
+				id: 'claude-opus-4-5',
+				name: 'Claude Opus 4.5',
+				contextWindow: 200_000,
 				config: {
 					thinking: {
 						type: 'enabled' as const,
@@ -87,6 +120,7 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 			{
 				id: 'claude-haiku-4-5',
 				name: 'Claude Haiku 4.5',
+				contextWindow: 200_000,
 				costPerM: {
 					inputNoCache: 1,
 					inputCacheRead: 0.1,
@@ -97,35 +131,48 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 		],
 	},
 	openai: {
+		create: (settings, modelId) => createOpenAI(settings).responses(modelId),
+		auth: { apiKey: 'required' },
 		envVar: 'OPENAI_API_KEY',
-		extractorModelId: 'gpt-5-mini',
+		baseUrlEnvVar: 'OPENAI_BASE_URL',
+		extractorModelId: 'gpt-4.1-mini',
+		summaryModelId: 'gpt-4.1-mini',
+		defaultOptions: { store: false, truncation: 'auto' },
 		models: [
 			{
 				id: 'gpt-5.2',
 				name: 'GPT 5.2',
 				default: true,
+				contextWindow: 400_000,
 				costPerM: { inputNoCache: 1.75, inputCacheRead: 0.175, inputCacheWrite: 0, output: 14 },
 			},
 			{
 				id: 'gpt-5-mini',
 				name: 'GPT 5 mini',
+				contextWindow: 400_000,
 				costPerM: { inputNoCache: 0.25, inputCacheRead: 0.025, inputCacheWrite: 0, output: 2 },
 			},
 			{
 				id: 'gpt-4.1',
 				name: 'GPT 4.1',
+				contextWindow: 1_000_000,
 				costPerM: { inputNoCache: 3, inputCacheRead: 0.75, inputCacheWrite: 0, output: 12 },
 			},
 		],
 	},
 	google: {
+		create: (settings, modelId) => createGoogleGenerativeAI(settings).chat(modelId),
+		auth: { apiKey: 'required' },
 		envVar: 'GEMINI_API_KEY',
+		baseUrlEnvVar: 'GEMINI_BASE_URL',
 		extractorModelId: 'gemini-2.5-flash',
+		summaryModelId: 'gemini-2.5-flash',
 		models: [
 			{
 				id: 'gemini-3-pro-preview',
 				name: 'Gemini 3 Pro',
 				default: true,
+				contextWindow: 1_000_000,
 				config: {
 					thinkingConfig: {
 						thinkingLevel: 'high',
@@ -133,10 +180,11 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 					},
 				},
 			},
-			{ id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash' },
+			{ id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', contextWindow: 1_000_000 },
 			{
 				id: 'gemini-2.5-pro',
 				name: 'Gemini 2.5 Pro',
+				contextWindow: 1_000_000,
 				config: {
 					thinkingConfig: {
 						thinkingBudget: 8192,
@@ -144,51 +192,119 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 					},
 				},
 			},
-			{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+			{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextWindow: 1_000_000 },
 		],
 	},
 	mistral: {
+		create: (settings, modelId) => createMistral(settings).chat(modelId),
+		auth: { apiKey: 'required' },
 		envVar: 'MISTRAL_API_KEY',
+		baseUrlEnvVar: 'MISTRAL_BASE_URL',
 		extractorModelId: 'mistral-medium-latest',
+		summaryModelId: 'mistral-medium-latest',
 		models: [
 			{
 				id: 'mistral-medium-latest',
 				name: 'Mistral Medium 3.1',
 				default: true,
+				contextWindow: 128_000,
 				costPerM: { inputNoCache: 0.4, inputCacheRead: 0.4, inputCacheWrite: 0, output: 2 },
 			},
 			{
 				id: 'mistral-large-latest',
 				name: 'Mistral Large 3',
+				contextWindow: 256_000,
 				costPerM: { inputNoCache: 0.5, inputCacheRead: 0.5, inputCacheWrite: 0, output: 1.5 },
 			},
 		],
 	},
 	openrouter: {
+		create: (settings, modelId) => createOpenRouter(settings).chat(modelId),
+		auth: { apiKey: 'required' },
 		envVar: 'OPENROUTER_API_KEY',
+		baseUrlEnvVar: 'OPENROUTER_BASE_URL',
 		extractorModelId: 'anthropic/claude-haiku-4.5',
+		summaryModelId: 'anthropic/claude-haiku-4.5',
 		models: [
 			{
 				id: 'moonshotai/kimi-k2.5',
 				name: 'Kimi K2.5',
 				default: true,
+				contextWindow: 262_144,
 				costPerM: { inputNoCache: 0.5, inputCacheRead: 0.8, inputCacheWrite: 0, output: 2.25 },
 			},
 			{
 				id: 'deepseek/deepseek-v3.2',
 				name: 'DeepSeek V3.2',
+				contextWindow: 163_800,
 				costPerM: { inputNoCache: 0.26, inputCacheRead: 0.15, inputCacheWrite: 0, output: 0.4 },
 			},
 			{
 				id: 'anthropic/claude-sonnet-4.5',
 				name: 'Claude Sonnet 4.5 (OpenRouter)',
+				contextWindow: 1_000_000,
 				costPerM: { inputNoCache: 3, inputCacheRead: 0.3, inputCacheWrite: 3.75, output: 15 },
 			},
 			{
 				id: 'openai/gpt-5.2',
 				name: 'GPT 5.2 (OpenRouter)',
+				contextWindow: 400_000,
 				costPerM: { inputNoCache: 1.75, inputCacheRead: 0.175, inputCacheWrite: 0, output: 14 },
 			},
+		],
+	},
+	ollama: {
+		create: (settings, modelId) => createOllama(settings).chat(modelId),
+		auth: { apiKey: 'none' },
+		envVar: 'OLLAMA_API_KEY',
+		baseUrlEnvVar: 'OLLAMA_BASE_URL',
+		extractorModelId: 'llama3.2:3b',
+		summaryModelId: 'llama3.2:3b',
+		models: [
+			{ id: 'qwen3:8b', name: 'Qwen 3 8B', default: true },
+			{ id: 'llama3.2:3b', name: 'Llama 3.2 3B' },
+			{ id: 'mistral:7b', name: 'Mistral 7B' },
+		],
+	},
+	bedrock: {
+		create: (settings, modelId) => {
+			const creds = settings.credentials;
+			const region = creds?.region || process.env.AWS_REGION || 'us-east-1';
+			const resolvedModelId = resolveBedrockModelId(modelId, region);
+			let config;
+
+			if (settings.apiKey) {
+				config = { apiKey: settings.apiKey, region };
+			} else if (creds?.accessKeyId && creds?.secretAccessKey) {
+				config = { region, accessKeyId: creds.accessKeyId, secretAccessKey: creds.secretAccessKey };
+			} else {
+				config = {
+					region,
+					accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+					secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+				};
+			}
+
+			return createAmazonBedrock(config).languageModel(resolvedModelId);
+		},
+		auth: {
+			apiKey: 'optional',
+			alternativeEnvVars: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
+			hint: 'Optional — uses AWS credentials from environment if not provided',
+			extraFields: [
+				{ name: 'region', label: 'AWS Region', envVar: 'AWS_REGION', placeholder: 'us-east-1' },
+				{ name: 'accessKeyId', label: 'Access Key ID', envVar: 'AWS_ACCESS_KEY_ID' },
+				{ name: 'secretAccessKey', label: 'Secret Access Key', envVar: 'AWS_SECRET_ACCESS_KEY', secret: true },
+			],
+		},
+		envVar: 'AWS_BEARER_TOKEN_BEDROCK',
+		extractorModelId: 'anthropic.claude-sonnet-4-6',
+		summaryModelId: 'anthropic.claude-sonnet-4-6',
+		models: [
+			{ id: 'us.anthropic.claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (Bedrock US)', default: true },
+			{ id: 'eu.anthropic.claude-opus-4-6-v1', name: 'Claude Opus 4.6 (Bedrock EU)' },
+			{ id: 'deepseek.v3.2', name: 'DeepSeek V3.2 (Bedrock)' },
+			{ id: 'mistral.devstral-2-123b', name: 'Mistral 2 123B (Bedrock)' },
 		],
 	},
 };
@@ -204,46 +320,22 @@ export function getDefaultModelId(provider: LlmProvider): string {
 	return defaultModel?.id ?? models[0].id;
 }
 
-export function getProviderModelConfig<P extends LlmProvider>(provider: P, modelId: string): ProviderConfigMap[P] {
+export function getProviderAuth(provider: LlmProvider): ProviderAuth {
+	return LLM_PROVIDERS[provider].auth;
+}
+
+export function getProviderApiKeyRequirement(provider: LlmProvider): boolean {
+	return LLM_PROVIDERS[provider].auth.apiKey === 'required';
+}
+
+function getProviderModelConfig<P extends LlmProvider>(provider: P, modelId: string): ProviderConfigMap[P] {
 	const model = LLM_PROVIDERS[provider].models.find((m) => m.id === modelId);
 	return (model?.config ?? {}) as ProviderConfigMap[P];
 }
-
-/** Default provider options applied to all models of a provider */
-const DEFAULT_PROVIDER_OPTIONS: { [P in LlmProvider]?: ProviderConfigMap[P] } = {
-	anthropic: {
-		disableParallelToolUse: false,
-		contextManagement: {
-			edits: [
-				{
-					type: 'clear_tool_uses_20250919',
-					trigger: {
-						type: 'input_tokens',
-						value: 180_000,
-					},
-					clearToolInputs: false,
-					excludeTools: ['display_chart', 'execute_python', 'execute_sql', 'grep', 'list', 'read', 'search'],
-				},
-			],
-		},
-	} satisfies AnthropicProviderOptions,
-	// Avoid item references (fc_*, etc.) so agentic loops work with Zero Data Retention orgs.
-	openai: { store: false, truncation: 'auto' },
-};
-
-type ModelCreator = (settings: ProviderSettings, modelId: string) => LanguageModel;
-
-const MODEL_CREATORS: Record<LlmProvider, ModelCreator> = {
-	anthropic: (settings, modelId) => createAnthropic(settings).chat(modelId),
-	google: (settings, modelId) => createGoogleGenerativeAI(settings).chat(modelId),
-	mistral: (settings, modelId) => createMistral(settings).chat(modelId),
-	openai: (settings, modelId) => createOpenAI(settings).responses(modelId),
-	openrouter: (settings, modelId) => createOpenRouter(settings).chat(modelId),
-};
-
-type ProviderModelResult = {
-	model: LanguageModel;
+export type ProviderModelResult = {
+	model: LanguageModelV3;
 	providerOptions: Partial<{ [P in LlmProvider]: ProviderConfigMap[P] }>;
+	contextWindow: number;
 };
 
 /** Create a language model instance with merged provider options */
@@ -252,14 +344,36 @@ export function createProviderModel(
 	settings: ProviderSettings,
 	modelId: string,
 ): ProviderModelResult {
-	const model = MODEL_CREATORS[provider](settings, modelId);
-	const defaultOptions = DEFAULT_PROVIDER_OPTIONS[provider] ?? {};
+	const providerConfig = LLM_PROVIDERS[provider];
+	const defaultOptions = providerConfig.defaultOptions ?? {};
 	const modelConfig = getProviderModelConfig(provider, modelId);
+	const contextWindow = providerConfig.models.find((m) => m.id === modelId)?.contextWindow ?? 200_000;
 
 	return {
-		model,
+		model: providerConfig.create(settings, modelId),
 		providerOptions: {
 			[provider]: { ...defaultOptions, ...modelConfig },
 		},
+		contextWindow,
 	};
+}
+
+const BEDROCK_REGION_PREFIXES = new Set(['us', 'eu', 'ap']);
+const BEDROCK_CROSS_REGION_PROVIDERS = new Set(['anthropic', 'meta']);
+
+function getBedrockRegionPrefix(region: string): string {
+	const geo = region.split('-')[0];
+	return BEDROCK_REGION_PREFIXES.has(geo) ? geo : 'us';
+}
+
+/** Prepend the geographic prefix for cross-region inference models that don't already have one. */
+function resolveBedrockModelId(modelId: string, region: string): string {
+	const firstSegment = modelId.split('.')[0];
+	if (BEDROCK_REGION_PREFIXES.has(firstSegment)) {
+		return modelId;
+	}
+	if (BEDROCK_CROSS_REGION_PROVIDERS.has(firstSegment)) {
+		return `${getBedrockRegionPrefix(region)}.${modelId}`;
+	}
+	return modelId;
 }

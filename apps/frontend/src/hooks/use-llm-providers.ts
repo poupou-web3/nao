@@ -31,6 +31,7 @@ export function useLlmProviders() {
 	// Derived data
 	const projectConfigs = llmConfigs.data?.projectConfigs ?? [];
 	const envProviders = llmConfigs.data?.envProviders ?? [];
+	const envBaseUrls = llmConfigs.data?.envBaseUrls ?? {};
 	const projectConfiguredProviders = projectConfigs.map((c) => c.provider);
 
 	const availableProvidersToAdd: LlmProvider[] = llmProviderSchema.options.filter(
@@ -43,11 +44,19 @@ export function useLlmProviders() {
 
 	// Handlers
 	const invalidateQueries = async () => {
-		await queryClient.invalidateQueries({ queryKey: trpc.project.getLlmConfigs.queryOptions().queryKey });
-		await queryClient.invalidateQueries({ queryKey: trpc.project.getAvailableModels.queryOptions().queryKey });
+		await Promise.all([
+			queryClient.invalidateQueries({ queryKey: trpc.project.getLlmConfigs.queryOptions().queryKey }),
+			queryClient.invalidateQueries({ queryKey: trpc.project.getAvailableModels.queryOptions().queryKey }),
+			queryClient.invalidateQueries({ queryKey: trpc.project.getKnownTranscribeModels.queryOptions().queryKey }),
+		]);
 	};
 
-	const handleSubmit = async (values: { apiKey?: string; enabledModels: string[]; baseUrl?: string }) => {
+	const handleSubmit = async (values: {
+		apiKey?: string;
+		credentials?: Record<string, string>;
+		enabledModels: string[];
+		baseUrl?: string;
+	}) => {
 		if (!editingState?.provider) {
 			return;
 		}
@@ -55,6 +64,7 @@ export function useLlmProviders() {
 		await upsertLlmConfig.mutateAsync({
 			provider: editingState.provider,
 			apiKey: values.apiKey,
+			credentials: values.credentials,
 			enabledModels: values.enabledModels,
 			baseUrl: values.baseUrl,
 		});
@@ -110,6 +120,7 @@ export function useLlmProviders() {
 		// Data
 		projectConfigs,
 		envProviders,
+		envBaseUrls,
 		availableProvidersToAdd,
 		unconfiguredEnvProviders,
 		currentModels,

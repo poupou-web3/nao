@@ -2,15 +2,17 @@ import { TRPCError } from '@trpc/server';
 import { hashPassword } from 'better-auth/crypto';
 import { z } from 'zod/v4';
 
+import * as memoryQueries from '../queries/memory';
 import * as projectQueries from '../queries/project.queries';
 import * as userQueries from '../queries/user.queries';
 import { emailService } from '../services/email.service';
-import { adminProtectedProcedure, projectProtectedProcedure, publicProcedure } from './trpc';
+import { adminProtectedProcedure, projectProtectedProcedure, protectedProcedure, publicProcedure } from './trpc';
 
 export const userRoutes = {
 	countAll: publicProcedure.query(() => {
 		return userQueries.countAll();
 	}),
+
 	get: projectProtectedProcedure.input(z.object({ userId: z.string() })).query(async ({ input, ctx }) => {
 		if (ctx.userRole !== 'admin' && input.userId !== ctx.user.id) {
 			throw new TRPCError({ code: 'FORBIDDEN', message: 'Only admins can access other users information' });
@@ -22,6 +24,7 @@ export const userRoutes = {
 		}
 		return user;
 	}),
+
 	modify: projectProtectedProcedure
 		.input(
 			z.object({
@@ -51,6 +54,7 @@ export const userRoutes = {
 				await userQueries.modify(input.userId, input.name);
 			}
 		}),
+
 	addUserToProject: adminProtectedProcedure
 		.input(
 			z.object({
@@ -135,4 +139,13 @@ export const userRoutes = {
 
 			return { success: true, newUser: newUserWithRole };
 		}),
+
+	getMemorySettings: protectedProcedure.query(async ({ ctx }) => {
+		const memoryEnabled = await userQueries.getMemoryEnabled(ctx.user.id);
+		return { memoryEnabled };
+	}),
+
+	getMemories: protectedProcedure.query(async ({ ctx }) => {
+		return memoryQueries.getUserMemories(ctx.user.id);
+	}),
 };

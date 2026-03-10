@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 class DatabaseType(str, Enum):
     """Supported database types."""
 
+    ATHENA = "athena"
     BIGQUERY = "bigquery"
     CLICKHOUSE = "clickhouse"
     DUCKDB = "duckdb"
@@ -21,6 +22,7 @@ class DatabaseType(str, Enum):
     MSSQL = "mssql"
     POSTGRES = "postgres"
     REDSHIFT = "redshift"
+    TRINO = "trino"
 
     @classmethod
     def choices(cls) -> list[questionary.Choice]:
@@ -70,25 +72,27 @@ class DatabaseConfig(BaseModel, ABC):
         """Execute arbitrary SQL and return results as a DataFrame."""
         conn = self.connect()
         cursor = conn.raw_sql(sql)  # type: ignore[union-attr]
+        try:
+            if hasattr(cursor, "fetchdf"):
+                return cursor.fetchdf()
+            if hasattr(cursor, "to_dataframe"):
+                return cursor.to_dataframe()
 
-        if hasattr(cursor, "fetchdf"):
-            return cursor.fetchdf()
-        if hasattr(cursor, "to_dataframe"):
-            return cursor.to_dataframe()
+            # ClickHouse (clickhouse_connect) returns QueryResult with result_rows + column_names
+            if hasattr(cursor, "result_rows") and hasattr(cursor, "column_names"):
+                columns = list(cursor.column_names)
+                return pd.DataFrame(cursor.result_rows, columns=columns)  # type: ignore[arg-type]
 
-        # ClickHouse (clickhouse_connect) returns QueryResult with result_rows + column_names
-        if hasattr(cursor, "result_rows") and hasattr(cursor, "column_names"):
-            columns = list(cursor.column_names)
-            return pd.DataFrame(cursor.result_rows, columns=columns)  # type: ignore[arg-type]
+            if hasattr(cursor, "description") and cursor.description is not None and hasattr(cursor, "fetchall"):
+                columns = [desc[0] for desc in cursor.description]
+                return pd.DataFrame(cursor.fetchall(), columns=columns)  # type: ignore[arg-type]
 
-        if hasattr(cursor, "description") and cursor.description is not None and hasattr(cursor, "fetchall"):
-            columns = [desc[0] for desc in cursor.description]
-            return pd.DataFrame(cursor.fetchall(), columns=columns)  # type: ignore[arg-type]
-
-        raise TypeError(
-            f"Unsupported raw_sql result type: {type(cursor).__name__}. "
-            "Expected cursor with fetchdf, to_dataframe, to_pandas, result_rows/column_names, or description/fetchall."
-        )
+            raise TypeError(
+                f"Unsupported raw_sql result type: {type(cursor).__name__}. "
+                "Expected cursor with fetchdf, to_dataframe, to_pandas, result_rows/column_names, or description/fetchall."
+            )
+        finally:
+            conn.disconnect()
 
     def matches_pattern(self, schema: str, table: str) -> bool:
         """Check if a schema.table matches the include/exclude patterns.

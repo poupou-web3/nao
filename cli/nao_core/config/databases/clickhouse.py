@@ -284,7 +284,7 @@ class ClickHouseConfig(DatabaseConfig):
         default=None,
         description="If set, only sync these databases (schema names). Empty or None = sync all user databases.",
     )
-    accessors: list[DatabaseAccessor] = Field(
+    accessors: list = Field(
         default_factory=lambda: list(DatabaseAccessor),
         description="Which default templates to render per table. Defaults to all.",
     )

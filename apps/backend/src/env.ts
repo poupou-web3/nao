@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import dotenv from 'dotenv';
-import { z } from 'zod';
+import { z } from 'zod/v4';
 
 // Loads .env file at the root of the repository
 dotenv.config({
@@ -28,9 +28,6 @@ const envSchema = z.object({
 	GOOGLE_CLIENT_ID: z.string().optional(),
 	GOOGLE_CLIENT_SECRET: z.string().optional(),
 	GOOGLE_AUTH_DOMAINS: z.string().optional(),
-
-	SLACK_BOT_TOKEN: z.string().optional(),
-	SLACK_SIGNING_SECRET: z.string().optional(),
 
 	FASTAPI_PORT: z.coerce.number().default(8005),
 	APP_VERSION: z.string().default('dev'),

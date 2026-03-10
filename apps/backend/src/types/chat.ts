@@ -6,9 +6,11 @@ import {
 	type UIMessage as UIGenericMessage,
 	UIMessagePart as UIGenericMessagePart,
 } from 'ai';
+import z from 'zod/v4';
 
-import { tools } from '../agents/tools';
+import { getTools, tools } from '../agents/tools';
 import { MessageFeedback } from '../db/abstractSchema';
+import { llmProviderSchema } from './llm';
 
 export interface UIChat {
 	id: string;
@@ -31,6 +33,7 @@ export interface ChatListItem {
 
 export type UIMessage = UIGenericMessage<unknown, MessageCustomDataParts, UITools> & {
 	feedback?: MessageFeedback;
+	source?: 'slack' | 'web';
 };
 
 export type UITools = InferUITools<typeof tools>;
@@ -39,7 +42,19 @@ export type UITools = InferUITools<typeof tools>;
 export type MessageCustomDataParts = {
 	/** Sent when a new chat is created */
 	newChat: ChatListItem;
+	/** Maps the client-generated user message ID to the server-generated one */
+	newUserMessage: { newId: string };
+	/** Sent when conversation compaction is triggered */
+	compactionSummaryStarted: undefined;
+	/** Sent when the conversation compaction summary is finished */
+	compaction: CompactionPart;
 };
+
+export interface CompactionPart {
+	/** The summary of the compaction */
+	summary: string;
+	error?: string;
+}
 
 export type UIMessagePart = UIGenericMessagePart<MessageCustomDataParts, UITools>;
 
@@ -60,14 +75,14 @@ export type UIMessagePartType = UIMessagePart['type'];
 export type StopReason = FinishReason | 'interrupted';
 
 export type TokenUsage = {
-	inputTotalTokens?: number;
-	inputNoCacheTokens?: number;
-	inputCacheReadTokens?: number;
-	inputCacheWriteTokens?: number;
-	outputTotalTokens?: number;
-	outputTextTokens?: number;
-	outputReasoningTokens?: number;
-	totalTokens?: number;
+	inputTotalTokens: number | undefined;
+	inputNoCacheTokens: number | undefined;
+	inputCacheReadTokens: number | undefined;
+	inputCacheWriteTokens: number | undefined;
+	outputTotalTokens: number | undefined;
+	outputTextTokens: number | undefined;
+	outputReasoningTokens: number | undefined;
+	totalTokens: number | undefined;
 };
 
 export type TokenCost = {
@@ -78,8 +93,39 @@ export type TokenCost = {
 	totalCost?: number;
 };
 
-export type Mention = {
-	id: string;
-	label: string;
-	trigger: string;
+export type ContextUsage = {
+	tokensUsed: number;
+	contextWindow: number | null;
 };
+
+export type AgentTools = Awaited<ReturnType<typeof getTools>>;
+
+/**
+ * Agent Request Types
+ */
+
+export type Mention = z.infer<typeof MentionSchema>;
+export const MentionSchema = z.object({
+	id: z.string(),
+	trigger: z.string(),
+	label: z.string(),
+});
+
+export type AgentRequestUserMessage = z.infer<typeof AgentRequestUserMessageSchema>;
+export const AgentRequestUserMessageSchema = z.object({
+	text: z.string(),
+});
+
+const ModelSelectionSchema = z.object({
+	provider: llmProviderSchema,
+	modelId: z.string(),
+});
+
+export type AgentRequest = z.infer<typeof AgentRequestSchema>;
+export const AgentRequestSchema = z.object({
+	message: AgentRequestUserMessageSchema,
+	chatId: z.string().optional(),
+	messageToEditId: z.string().optional(),
+	model: ModelSelectionSchema.optional(),
+	mentions: z.array(MentionSchema).optional(),
+});

@@ -3,7 +3,8 @@ import { getToolName, isToolUIPart } from 'ai';
 
 import { DBMessagePart, NewMessagePart } from '../db/abstractSchema';
 import { UIMessagePart, UIToolPart } from '../types/chat';
-import { LlmProvider } from '../types/llm';
+
+const PROVIDER_EXECUTED_TOOLS = new Set(['web_search', 'web_fetch', 'google_search']);
 
 /**
  * Converts a list of UI message parts to a list of database message parts.
@@ -55,18 +56,32 @@ export const convertUIPartToDBPart = (
 				reasoningText: part.text,
 				providerMetadata: part.providerMetadata,
 			};
+		case 'step-start':
+			return {
+				type: 'step-start',
+				messageId,
+				order,
+			};
+		case 'data-compaction':
+			return {
+				type: 'data-compaction',
+				text: part.data.summary,
+				messageId,
+				order,
+			};
 		default:
+			return undefined;
 	}
 };
 
 /**
  * Converts a list of database message parts to a list of UI message parts.
  */
-export const mapDBPartsToUIParts = (parts: DBMessagePart[], provider?: LlmProvider): UIMessagePart[] => {
-	return parts.map((part) => convertDBPartToUIPart(part, provider)).filter((part) => part !== undefined);
+export const mapDBPartsToUIParts = (parts: DBMessagePart[]): UIMessagePart[] => {
+	return parts.map((part) => convertDBPartToUIPart(part)).filter((part) => part !== undefined);
 };
 
-export const convertDBPartToUIPart = (part: DBMessagePart, provider?: LlmProvider): UIMessagePart | undefined => {
+export const convertDBPartToUIPart = (part: DBMessagePart): UIMessagePart | undefined => {
 	if (isToolDBPart(part)) {
 		return {
 			type: part.type,
@@ -77,7 +92,7 @@ export const convertDBPartToUIPart = (part: DBMessagePart, provider?: LlmProvide
 			rawInput: part.toolRawInput as any,
 			output: part.toolOutput as any,
 			errorText: part.toolErrorText as any,
-			providerExecuted: provider === 'anthropic',
+			providerExecuted: PROVIDER_EXECUTED_TOOLS.has(part.toolName!),
 			approval: part.toolApprovalId
 				? {
 						id: part.toolApprovalId!,
@@ -102,7 +117,19 @@ export const convertDBPartToUIPart = (part: DBMessagePart, provider?: LlmProvide
 				text: part.reasoningText!,
 				providerMetadata: part.providerMetadata ?? undefined,
 			};
+		case 'step-start':
+			return {
+				type: 'step-start',
+			};
+		case 'data-compaction':
+			return {
+				type: 'data-compaction',
+				data: {
+					summary: part.text!,
+				},
+			};
 		default:
+			return undefined;
 	}
 };
 

@@ -4,6 +4,7 @@ import s, { AgentSettings, DBProject, DBProjectMember, NewProject, NewProjectMem
 import { db } from '../db/db';
 import { env } from '../env';
 import { UserRole, UserWithRole } from '../types/project';
+import { HandlerError } from '../utils/error';
 
 export const getProjectByPath = async (path: string): Promise<DBProject | null> => {
 	const [project] = await db.select().from(s.project).where(eq(s.project.path, path)).execute();
@@ -13,6 +14,19 @@ export const getProjectByPath = async (path: string): Promise<DBProject | null> 
 export const getProjectById = async (id: string): Promise<DBProject | null> => {
 	const [project] = await db.select().from(s.project).where(eq(s.project.id, id)).execute();
 	return project ?? null;
+};
+
+export const getProjectMemoryEnabled = async (projectId: string): Promise<boolean> => {
+	const [project] = await db
+		.select({ agentSettings: s.project.agentSettings })
+		.from(s.project)
+		.where(eq(s.project.id, projectId))
+		.execute();
+	return project?.agentSettings?.memoryEnabled ?? true;
+};
+
+export const setProjectMemoryEnabled = async (projectId: string, memoryEnabled: boolean): Promise<void> => {
+	await updateAgentSettings(projectId, { memoryEnabled });
 };
 
 export const createProject = async (project: NewProject): Promise<DBProject> => {
@@ -91,7 +105,7 @@ export const getDefaultProject = async (): Promise<DBProject | null> => {
 	return getProjectByPath(projectPath);
 };
 
-export const checkUserHasProject = async (userId: string): Promise<DBProject | null> => {
+export const getProjectByUserId = async (userId: string): Promise<DBProject | null> => {
 	const projectPath = env.NAO_DEFAULT_PROJECT_PATH;
 	if (!projectPath) {
 		return null;
@@ -123,8 +137,21 @@ export const getAgentSettings = async (projectId: string): Promise<AgentSettings
 };
 
 export const updateAgentSettings = async (projectId: string, settings: AgentSettings): Promise<AgentSettings> => {
-	await db.update(s.project).set({ agentSettings: settings }).where(eq(s.project.id, projectId)).execute();
-	return settings;
+	const current = (await getAgentSettings(projectId)) ?? {};
+	const next: AgentSettings = {
+		...current,
+		...settings,
+		experimental: {
+			...current.experimental,
+			...settings.experimental,
+		},
+		webSearch: {
+			...current.webSearch,
+			...settings.webSearch,
+		},
+	};
+	await db.update(s.project).set({ agentSettings: next }).where(eq(s.project.id, projectId)).execute();
+	return next;
 };
 
 export const getEnabledToolsAndKnownServers = async (
@@ -151,4 +178,15 @@ export const updateEnabledToolsAndKnownServers = async (
 		.set({ enabledMcpTools: next.enabledTools, knownMcpServers: next.knownServers })
 		.where(eq(s.project.id, projectId))
 		.execute();
+};
+
+export const retrieveProjectById = async (projectId: string): Promise<DBProject> => {
+	const project = await getProjectById(projectId);
+	if (!project) {
+		throw new HandlerError('NOT_FOUND', `Project not found: ${projectId}`);
+	}
+	if (!project.path) {
+		throw new HandlerError('BAD_REQUEST', `Project path not configured: ${projectId}`);
+	}
+	return project;
 };

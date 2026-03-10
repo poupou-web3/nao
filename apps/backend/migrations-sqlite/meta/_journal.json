@@ -106,6 +106,62 @@
       "when": 1771591511059,
       "tag": "0014_add_enabledMcpTools_and_knownMcpServers_to_project",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1771614350511,
+      "tag": "0015_user_memory_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1771694141518,
+      "tag": "0016_chat_message_superseded_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1772031581593,
+      "tag": "0017_llm_inference_memory_superseded_by",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1772124770677,
+      "tag": "0018_added_message_part_chart_image",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1772144197644,
+      "tag": "0019_add_stories",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1772640831692,
+      "tag": "0020_bedrock_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1772702832964,
+      "tag": "0021_add_source_chat_message",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1772706229518,
+      "tag": "0022_add_slack_provider",
+      "breakpoints": true
     }
   ]
 }

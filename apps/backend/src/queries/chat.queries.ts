@@ -1,4 +1,4 @@
-import { and, desc, eq, like, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNull, like, sql } from 'drizzle-orm';
 
 import s, { DBChat, DBChatMessage, DBMessagePart, MessageFeedback, NewChat } from '../db/abstractSchema';
 import { db } from '../db/db';
@@ -7,7 +7,6 @@ import { ListChatResponse, StopReason, TokenUsage, UIChat, UIMessage } from '../
 import { LlmProvider } from '../types/llm';
 import { convertDBPartToUIPart, mapUIPartsToDBParts } from '../utils/chat-message-part-mappings';
 import { getErrorMessage } from '../utils/utils';
-import * as llmConfigQueries from './project-llm-config.queries';
 
 export const checkChatExists = async (chatId: string): Promise<boolean> => {
 	const result = await db.select().from(s.chat).where(eq(s.chat.id, chatId)).execute();
@@ -44,8 +43,9 @@ export const loadChat = async (
 		.select()
 		.from(s.chat)
 		.innerJoin(s.chatMessage, eq(s.chatMessage.chatId, s.chat.id))
-		.where(eq(s.chatMessage.chatId, chatId))
+		.where(and(eq(s.chatMessage.chatId, chatId), isNull(s.chatMessage.supersededAt)))
 		.innerJoin(s.messagePart, eq(s.messagePart.messageId, s.chatMessage.id))
+		.orderBy(asc(s.chatMessage.createdAt), asc(s.messagePart.order))
 		.$dynamic();
 
 	const result = opts.includeFeedback
@@ -57,8 +57,7 @@ export const loadChat = async (
 		return [];
 	}
 
-	const provider = await llmConfigQueries.getProjectModelProvider(chat.projectId);
-	const messages = aggregateChatMessagParts(result, provider);
+	const messages = aggregateChatMessagParts(result);
 	return [
 		{
 			id: chatId,
@@ -74,16 +73,15 @@ export const loadChat = async (
 /** Aggregate the message parts into a list of UI messages. */
 const aggregateChatMessagParts = (
 	result: {
-		chat: DBChat;
+		chat?: DBChat;
 		chat_message: DBChatMessage;
 		message_part: DBMessagePart;
 		message_feedback?: MessageFeedback | null;
 	}[],
-	provider?: LlmProvider,
-) => {
+): UIMessage[] => {
 	const messagesMap = result.reduce(
 		(acc, row) => {
-			const uiPart = convertDBPartToUIPart(row.message_part, provider);
+			const uiPart = convertDBPartToUIPart(row.message_part);
 			if (!uiPart) {
 				return acc;
 			}
@@ -96,6 +94,7 @@ const aggregateChatMessagParts = (
 					role: row.chat_message.role,
 					parts: [uiPart],
 					feedback: row.message_feedback ?? undefined,
+					source: row.chat_message.source ?? undefined,
 				};
 			}
 			return acc;
@@ -104,6 +103,18 @@ const aggregateChatMessagParts = (
 	);
 
 	return Object.values(messagesMap);
+};
+
+export const loadChatMessages = async (chatId: string): Promise<UIMessage[]> => {
+	const result = await db
+		.select()
+		.from(s.chatMessage)
+		.where(and(eq(s.chatMessage.chatId, chatId), isNull(s.chatMessage.supersededAt)))
+		.innerJoin(s.messagePart, eq(s.messagePart.messageId, s.chatMessage.id))
+		.orderBy(asc(s.chatMessage.createdAt), asc(s.messagePart.order))
+		.execute();
+
+	return aggregateChatMessagParts(result);
 };
 
 export const getChatOwnerId = async (chatId: string): Promise<string | undefined> => {
@@ -117,43 +128,63 @@ export const getChatOwnerId = async (chatId: string): Promise<string | undefined
 	return result?.userId;
 };
 
-export const createChat = async (newChat: NewChat, message: UIMessage): Promise<UIChat> => {
-	return db.transaction(async (t): Promise<UIChat> => {
+/** Marks all messages from a given message id onwards as superseeded (won't be used in the conversation anymore). */
+export const supersedeMessagesFrom = async (chatId: string, fromMessageId: string): Promise<void> => {
+	await db.transaction(async (t) => {
+		const [fromMessage] = await t
+			.select({ createdAt: s.chatMessage.createdAt })
+			.from(s.chatMessage)
+			.where(and(eq(s.chatMessage.id, fromMessageId), eq(s.chatMessage.chatId, chatId)))
+			.execute();
+
+		if (!fromMessage) {
+			return;
+		}
+
+		await t
+			.update(s.chatMessage)
+			.set({ supersededAt: new Date() })
+			.where(
+				and(
+					eq(s.chatMessage.chatId, chatId),
+					gte(s.chatMessage.createdAt, fromMessage.createdAt),
+					isNull(s.chatMessage.supersededAt),
+				),
+			)
+			.execute();
+	});
+};
+
+export const createChat = async (
+	newChat: NewChat,
+	newUserMessage: {
+		text: string;
+		source?: 'slack' | 'web';
+	},
+): Promise<[DBChat, DBChatMessage]> => {
+	return db.transaction(async (t): Promise<[DBChat, DBChatMessage]> => {
 		const [savedChat] = await t.insert(s.chat).values(newChat).returning().execute();
 
 		const [savedMessage] = await t
 			.insert(s.chatMessage)
 			.values({
 				chatId: savedChat.id,
-				role: message.role,
+				role: 'user',
+				source: newUserMessage.source,
 			})
 			.returning()
 			.execute();
 
-		const dbParts = mapUIPartsToDBParts(message.parts, savedMessage.id);
-		if (dbParts.length) {
-			await t.insert(s.messagePart).values(dbParts).execute();
-		}
+		const dbParts = mapUIPartsToDBParts([{ type: 'text', text: newUserMessage.text }], savedMessage.id);
+		await t.insert(s.messagePart).values(dbParts).execute();
 
-		return {
-			id: savedChat.id,
-			title: savedChat.title,
-			createdAt: savedChat.createdAt.getTime(),
-			updatedAt: savedChat.updatedAt.getTime(),
-			messages: [
-				{
-					id: savedMessage.id,
-					role: savedMessage.role,
-					parts: message.parts,
-				},
-			],
-		};
+		return [savedChat, savedMessage];
 	});
 };
 
 export const upsertMessage = async (
-	message: UIMessage, // TODO: generate uuid instead of using the one from the client
-	opts: {
+	message: Omit<UIMessage, 'id'> & {
+		id?: string;
 		chatId: string;
 		stopReason?: StopReason;
 		error?: unknown;
@@ -161,28 +192,32 @@ export const upsertMessage = async (
 		llmProvider?: LlmProvider;
 		llmModelId?: string;
 	},
-): Promise<void> => {
-	await db.transaction(async (t) => {
+): Promise<{ messageId: string }> => {
+	return db.transaction(async (t) => {
+		const messageId = message.id ?? crypto.randomUUID();
 		await t
 			.insert(s.chatMessage)
 			.values({
-				chatId: opts.chatId,
-				id: message.id,
+				id: messageId,
+				chatId: message.chatId,
 				role: message.role,
-				stopReason: opts.stopReason,
-				errorMessage: getErrorMessage(opts.error),
-				llmProvider: opts.llmProvider,
-				llmModelId: opts.llmModelId,
-				...opts.tokenUsage,
+				stopReason: message.stopReason,
+				errorMessage: getErrorMessage(message.error),
+				llmProvider: message.llmProvider,
+				llmModelId: message.llmModelId,
+				source: message.source,
+				...message.tokenUsage,
 			})
 			.onConflictDoNothing({ target: s.chatMessage.id })
 			.execute();
 
-		await t.delete(s.messagePart).where(eq(s.messagePart.messageId, message.id)).execute();
+		await t.delete(s.messagePart).where(eq(s.messagePart.messageId, messageId)).execute();
 		if (message.parts.length) {
-			const dbParts = mapUIPartsToDBParts(message.parts, message.id);
+			const dbParts = mapUIPartsToDBParts(message.parts, messageId);
 			await t.insert(s.messagePart).values(dbParts).execute();
 		}
+
+		return { messageId };
 	});
 };
 
@@ -216,6 +251,23 @@ export const getOwnerOfChatAndMessage = async (chatId: string, messageId: string
 		.execute();
 
 	return result?.userId;
+};
+
+export const getLastAssistantMessageId = async (chatId: string): Promise<string | null> => {
+	const [result] = await db
+		.select({ id: s.chatMessage.id })
+		.from(s.chatMessage)
+		.where(
+			and(
+				eq(s.chatMessage.chatId, chatId),
+				isNull(s.chatMessage.supersededAt),
+				eq(s.chatMessage.role, 'assistant'),
+			),
+		)
+		.orderBy(desc(s.chatMessage.createdAt))
+		.limit(1)
+		.execute();
+	return result?.id ?? null;
 };
 
 export const getChatBySlackThread = async (threadId: string): Promise<{ id: string; title: string } | null> => {

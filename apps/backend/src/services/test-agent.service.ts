@@ -2,7 +2,7 @@ import { generateText, ModelMessage, Output } from 'ai';
 import { z } from 'zod/v4';
 
 import type { UIMessage } from '../types/chat';
-import { AgentRunResult, AgentService, ModelSelection } from './agent.service';
+import { AgentRunResult, AgentService, ModelSelection } from './agent';
 
 type VerificationData = Record<string, string | number | boolean | null>[] | null;
 
@@ -31,7 +31,7 @@ export class TestAgentService extends AgentService {
 			projectId,
 		};
 
-		const agent = await this.create(tempChat, new AbortController(), modelSelection);
+		const agent = await this.create(tempChat, modelSelection);
 		return agent.generate([userMessage]);
 	}
 

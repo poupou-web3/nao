@@ -1,7 +1,8 @@
-from typing import Annotated, Union
+from typing import Annotated, Dict, Type, Union, cast
 
 from pydantic import Discriminator, Tag
 
+from .athena import AthenaConfig
 from .base import DatabaseAccessor, DatabaseConfig, DatabaseType
 from .bigquery import BigQueryConfig
 from .clickhouse import ClickHouseConfig
@@ -11,6 +12,7 @@ from .mssql import MssqlConfig
 from .postgres import PostgresConfig
 from .redshift import RedshiftConfig
 from .snowflake import SnowflakeConfig
+from .trino import TrinoConfig
 
 # =============================================================================
 # Database Config Registry
@@ -18,6 +20,7 @@ from .snowflake import SnowflakeConfig
 
 AnyDatabaseConfig = Annotated[
     Union[
+        Annotated[AthenaConfig, Tag("athena")],
         Annotated[BigQueryConfig, Tag("bigquery")],
         Annotated[ClickHouseConfig, Tag("clickhouse")],
         Annotated[DatabricksConfig, Tag("databricks")],
@@ -26,13 +29,15 @@ AnyDatabaseConfig = Annotated[
         Annotated[MssqlConfig, Tag("mssql")],
         Annotated[PostgresConfig, Tag("postgres")],
         Annotated[RedshiftConfig, Tag("redshift")],
+        Annotated[TrinoConfig, Tag("trino")],
     ],
     Discriminator("type"),
 ]
 
 
 # Mapping of database type to config class
-DATABASE_CONFIG_CLASSES: dict[DatabaseType, type[DatabaseConfig]] = {
+DATABASE_CONFIG_CLASSES: Dict[DatabaseType, Type[object]] = {
+    DatabaseType.ATHENA: AthenaConfig,
     DatabaseType.BIGQUERY: BigQueryConfig,
     DatabaseType.CLICKHOUSE: ClickHouseConfig,
     DatabaseType.DUCKDB: DuckDBConfig,
@@ -41,34 +46,29 @@ DATABASE_CONFIG_CLASSES: dict[DatabaseType, type[DatabaseConfig]] = {
     DatabaseType.SNOWFLAKE: SnowflakeConfig,
     DatabaseType.POSTGRES: PostgresConfig,
     DatabaseType.REDSHIFT: RedshiftConfig,
+    DatabaseType.TRINO: TrinoConfig,
 }
 
 
-def parse_database_config(data: dict) -> DatabaseConfig:
+def parse_database_config(data: dict) -> AnyDatabaseConfig:
     """Parse a database config dict into the appropriate type."""
-    db_type = data.get("type")
-    if db_type == "bigquery":
-        return BigQueryConfig.model_validate(data)
-    elif db_type == "clickhouse":
-        return ClickHouseConfig.model_validate(data)
-    elif db_type == "duckdb":
-        return DuckDBConfig.model_validate(data)
-    elif db_type == "databricks":
-        return DatabricksConfig.model_validate(data)
-    elif db_type == "snowflake":
-        return SnowflakeConfig.model_validate(data)
-    elif db_type == "mssql":
-        return MssqlConfig.model_validate(data)
-    elif db_type == "postgres":
-        return PostgresConfig.model_validate(data)
-    elif db_type == "redshift":
-        return RedshiftConfig.model_validate(data)
-    else:
-        raise ValueError(f"Unknown database type: {db_type}")
+    raw_type = data.get("type")
+    try:
+        db_type = DatabaseType(raw_type)
+    except (ValueError, KeyError):
+        raise ValueError(f"Unknown database type: {raw_type}")
+    config_class = DATABASE_CONFIG_CLASSES.get(db_type)
+    if config_class is None:
+        raise ValueError(f"Unsupported database type: {db_type}")
+    return cast(
+        AnyDatabaseConfig,
+        config_class.model_validate(data),  # type: ignore[unresolved-attribute]
+    )
 
 
 __all__ = [
     "AnyDatabaseConfig",
+    "AthenaConfig",
     "BigQueryConfig",
     "ClickHouseConfig",
     "DATABASE_CONFIG_CLASSES",
@@ -81,4 +81,5 @@ __all__ = [
     "SnowflakeConfig",
     "PostgresConfig",
     "RedshiftConfig",
+    "TrinoConfig",
 ]

@@ -6,10 +6,12 @@ import { createRuntime, type Runtime, ServerDefinition, ServerToolInfo } from 'm
 import { join } from 'path';
 
 import * as mcpConfigQueries from '../queries/project.queries';
+import { retrieveProjectById } from '../queries/project.queries';
 import { mcpJsonSchema, McpServerConfig, McpServerState } from '../types/mcp';
-import { retrieveProjectById } from '../utils/ai';
 import { prefixToolName, removePrefixToolName, sanitizeTools } from '../utils/tools';
 import { replaceEnvVars } from '../utils/utils';
+
+const HTTP_TRANSPORTS = ['streamable-http', 'sse', 'http'];
 
 export class McpService {
 	private _mcpJsonFilePath: string;
@@ -140,9 +142,8 @@ export class McpService {
 					throw new Error('Runtime not initialized');
 				}
 				const definition = this._convertToServerDefinition(serverName, serverConfig);
-				this._runtime.registerDefinition(definition, { overwrite: true });
+				this._runtime?.registerDefinition(definition, { overwrite: true });
 				await this._listTools(serverName);
-				return { serverName, success: true };
 			} catch (error) {
 				this._failedConnections[serverName] = (error as Error).message;
 			}
@@ -153,13 +154,18 @@ export class McpService {
 
 	// Convert MCP server config to MCPorter server definition
 	private _convertToServerDefinition(name: string, config: McpServerConfig): ServerDefinition {
-		if (config.type === 'http') {
+		const isHttp =
+			config.type === 'http' || (config.transport !== undefined && HTTP_TRANSPORTS.includes(config.transport));
+
+		if (isHttp) {
 			return {
 				name,
+				auth: 'oauth',
 				command: {
 					kind: 'http',
 					url: config.url!,
 				},
+				source: { kind: 'local', path: '<adhoc>' },
 			};
 		}
 
@@ -192,7 +198,7 @@ export class McpService {
 			const toolName = tool.name.startsWith(serverName) ? tool.name : prefixToolName(serverName, tool.name);
 			this._mcpTools[toolName] = {
 				description: tool.description,
-				inputSchema: jsonSchema(tool.inputSchema as JSONSchema7),
+				inputSchema: jsonSchema(tool.inputSchema as JSONSchema7) as unknown as Tool['inputSchema'],
 				execute: async (toolArgs: Record<string, unknown>) => {
 					return await this._callTool(toolName, toolArgs);
 				},
@@ -216,11 +222,9 @@ export class McpService {
 			throw new Error('Runtime not initialized');
 		}
 
-		const result = await this._runtime.callTool(serverName, removePrefixToolName(toolName), {
+		return await this._runtime.callTool(serverName, removePrefixToolName(toolName), {
 			args: toolArgs,
 		});
-
-		return result;
 	}
 
 	private async _cacheMcpState(): Promise<void> {
@@ -276,7 +280,7 @@ export class McpService {
 	}
 
 	private _setupFileWatcher(): void {
-		if (!this._mcpJsonFilePath) {
+		if (!this._mcpJsonFilePath || !existsSync(this._mcpJsonFilePath)) {
 			return;
 		}
 

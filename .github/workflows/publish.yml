@@ -27,8 +27,15 @@ jobs:
                       platform: linux
                       arch: arm64
                       wheel-tag: manylinux2014_aarch64
+                    # - os: windows-latest
+                    #   platform: win
+                    #   arch: x64
+                    #   wheel-tag: win_amd64
 
         runs-on: ${{ matrix.os }}
+        defaults:
+            run:
+                shell: bash
 
         steps:
             - name: Checkout
@@ -49,7 +56,6 @@ jobs:
               uses: actions/setup-node@v4
               with:
                   node-version-file: '.nvmrc'
-                  cache: 'npm'
 
             - name: Setup Python
               uses: actions/setup-python@v5
@@ -63,7 +69,7 @@ jobs:
               run: uv pip install --system cyclopts
 
             - name: Install npm dependencies
-              run: npm ci
+              run: bun install
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -102,7 +108,7 @@ jobs:
             - name: Upload wheel artifact
               uses: actions/upload-artifact@v4
               with:
-                  name: wheel-${{ matrix.platform }}-${{ matrix.arch }}
+                  name: wheel-${{ matrix.wheel-tag }}
                   path: cli/dist/*.whl
                   retention-days: 7
 

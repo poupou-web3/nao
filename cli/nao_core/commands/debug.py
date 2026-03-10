@@ -1,3 +1,4 @@
+import os
 from typing import Tuple
 
 from rich.console import Console
@@ -38,6 +39,32 @@ def _check_available_models(provider: str, api_key: str) -> Tuple[bool, str]:
 
         client = Mistral(api_key=api_key)
         models = client.models.list()
+    elif provider == "openrouter":
+        from openai import OpenAI
+
+        client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
+        models = client.models.list()
+    elif provider == "ollama":
+        try:
+            import ollama
+        except ImportError:
+            return (
+                False,
+                "Provider 'ollama' requires the optional dependency 'ollama'. Install it to use this provider.",
+            )
+
+        models = ollama.list().models
+    elif provider == "bedrock":
+        region = os.environ.get("AWS_REGION", "us-east-1")
+        bearer_token = api_key or os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+        if bearer_token:
+            return True, f"Bearer token configured (region: {region})"
+
+        import boto3
+
+        client = boto3.client("bedrock", region_name=region)
+        response = client.list_foundation_models()
+        models = response.get("modelSummaries", [])
     else:
         return False, f"Unknown provider: {provider}"
 

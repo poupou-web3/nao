@@ -57,9 +57,14 @@ function createAuthInstance(googleConfig: GoogleConfig) {
 	});
 }
 
-let authPromise = orgQueries.getGoogleConfig().then(createAuthInstance);
+let authPromise: Promise<ReturnType<typeof createAuthInstance>> | null = null;
 
-export const getAuth = () => authPromise;
+export const getAuth = () => {
+	if (!authPromise) {
+		authPromise = orgQueries.getGoogleConfig().then(createAuthInstance);
+	}
+	return authPromise;
+};
 
 export function updateAuth() {
 	authPromise = orgQueries.getGoogleConfig().then(createAuthInstance);
