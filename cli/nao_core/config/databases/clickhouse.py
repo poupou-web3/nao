@@ -355,7 +355,10 @@ def _columns_from_system(conn: BaseBackend, database: str, table_name: str) -> l
         # Escape single quotes for safe SQL (identifiers from config)
         d = database.replace("\\", "\\\\").replace("'", "''")
         t = table_name.replace("\\", "\\\\").replace("'", "''")
-        sql = f"SELECT name, type FROM system.columns WHERE database = '{d}' AND table = '{t}' ORDER BY position"
+        sql = (
+            "SELECT name, type, default_kind, default_expression "
+            f"FROM system.columns WHERE database = '{d}' AND table = '{t}' ORDER BY position"
+        )
         cursor = conn.raw_sql(sql)  # type: ignore[union-attr]
         rows = _raw_sql_to_rows(cursor)
         return [
@@ -364,11 +367,35 @@ def _columns_from_system(conn: BaseBackend, database: str, table_name: str) -> l
                 "type": str(r.get("type", "")),
                 "nullable": "Nullable" in str(r.get("type", "")),
                 "description": None,
+                "default_kind": str(r.get("default_kind", "")).strip() or None,
+                "default_expression": str(r.get("default_expression", "")).strip() or None,
             }
             for r in rows
         ]
     except Exception:
         return []
+
+
+def _column_defaults_from_system(conn: BaseBackend, database: str, table_name: str) -> dict[str, dict[str, str | None]]:
+    """Return default-kind/expression metadata for table columns from system.columns."""
+    out: dict[str, dict[str, str | None]] = {}
+    for col in _columns_from_system(conn, database, table_name):
+        out[col["name"]] = {
+            "default_kind": col.get("default_kind"),
+            "default_expression": col.get("default_expression"),
+        }
+    return out
+
+
+def _column_types_from_system(conn: BaseBackend, database: str, table_name: str) -> dict[str, str]:
+    """Return native ClickHouse column type strings keyed by column name."""
+    out: dict[str, str] = {}
+    for col in _columns_from_system(conn, database, table_name):
+        name = col.get("name")
+        typ = col.get("type")
+        if isinstance(name, str) and isinstance(typ, str) and typ:
+            out[name] = typ
+    return out
 
 
 def _get_table_engine(conn: BaseBackend, database: str, table_name: str) -> str | None:
@@ -474,7 +501,7 @@ class ClickHouseDatabaseContext(DatabaseContext):
             return _columns_from_system(self._conn, self._schema, self._table_name)
         try:
             schema = self.table.schema()
-            return [
+            cols = [
                 {
                     "name": name,
                     "type": self._format_type(dtype),
@@ -483,6 +510,22 @@ class ClickHouseDatabaseContext(DatabaseContext):
                 }
                 for name, dtype in schema.items()
             ]
+            system_types = _column_types_from_system(self._conn, self._schema, self._table_name)
+            defaults = _column_defaults_from_system(self._conn, self._schema, self._table_name)
+            for col in cols:
+                name = col.get("name")
+                if not isinstance(name, str):
+                    continue
+                # Preserve native ClickHouse type details (e.g. LowCardinality, Decimal params),
+                # then add explicit NOT NULL for consistency with existing markdown output.
+                if native_type := system_types.get(name):
+                    if col.get("nullable") is False and "Nullable(" not in native_type:
+                        col["type"] = f"{native_type} NOT NULL"
+                    else:
+                        col["type"] = native_type
+                if meta := defaults.get(name):
+                    col.update(meta)
+            return cols
         except Exception:
             return _columns_from_system(self._conn, self._schema, self._table_name)
 
@@ -625,10 +668,12 @@ class ClickHouseConfig(DatabaseConfig):
     def get_schemas(self, conn: BaseBackend) -> list[str]:
         list_databases = getattr(conn, "list_databases", None)
         if list_databases:
-            schemas = [s for s in list_databases() if s not in self._SYSTEM_DATABASES]
+            all_schemas = list_databases()
+            # If the user explicitly configured schemas_include, respect it even for system databases.
             if self.schemas_include:
-                schemas = [s for s in schemas if s in self.schemas_include]
-            return schemas
+                return [s for s in all_schemas if s in self.schemas_include]
+            # Otherwise, use the safe default set that skips system/internal databases.
+            return [s for s in all_schemas if s not in self._SYSTEM_DATABASES]
         return []
 
     def create_context(self, conn: BaseBackend, schema: str, table_name: str) -> ClickHouseDatabaseContext:

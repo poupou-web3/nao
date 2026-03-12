@@ -295,6 +295,22 @@ class TestClickHouseSyncIntegration(BaseSyncIntegrationTests):
         assert "orders_by_user_proj" not in state.synced_tables[spec.primary_schema]
         assert not (base / "table=orders_by_user_proj").exists()
 
+    def test_columns_md_includes_default_alias_materialized_metadata(self, synced, spec):
+        """columns.md should include DEFAULT / MATERIALIZED / ALIAS expressions when present."""
+        _, output, config = synced
+        content = self._read_table_file(output, config, spec, "computed_columns", "columns.md").lower()
+
+        assert "default now()" in content
+        assert "materialized toyyyymmdd(created_at)" in content
+        assert "alias tostring(id)" in content
+
+    def test_columns_md_preserves_low_cardinality_types(self, synced, spec):
+        """columns.md should preserve native ClickHouse LowCardinality type wrappers."""
+        _, output, config = synced
+        content = self._read_table_file(output, config, spec, "low_cardinality_columns", "columns.md").lower()
+
+        assert "lowcardinality(string)" in content
+
     def test_mv_target_table_indexes_include_key_metadata(self, synced, spec):
         """Materialized-view target table should expose useful key/index metadata."""
         _, output, config = synced

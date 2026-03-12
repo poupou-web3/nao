@@ -42,6 +42,30 @@ INSERT INTO orders (id, user_id, amount) VALUES
     (1, 1, 99.99),
     (2, 1, 24.50);
 
+-- Computed/default columns (metadata in system.columns) ------------
+CREATE TABLE computed_columns (
+    id UInt32,
+    created_at DateTime DEFAULT now(),
+    day UInt32 MATERIALIZED toYYYYMMDD(created_at),
+    id_str String ALIAS toString(id)
+) ENGINE = MergeTree()
+ORDER BY (id);
+
+INSERT INTO computed_columns (id) VALUES
+    (1),
+    (2);
+
+-- LowCardinality type preservation ---------------------------------
+CREATE TABLE low_cardinality_columns (
+    id UInt32,
+    env_name LowCardinality(String),
+) ENGINE = MergeTree()
+ORDER BY (id);
+
+INSERT INTO low_cardinality_columns (id, env_name, client_tag) VALUES
+    (1, 'prod', NULL),
+    (2, 'staging', 'canary');
+
 -- Additional tables used only for sync-state counts ----------------
 CREATE TABLE orders_summing (
     id UInt32,
@@ -109,5 +133,3 @@ PRIMARY KEY id
 SOURCE(CLICKHOUSE(TABLE 'users'))
 LAYOUT(FLAT())
 LIFETIME(MIN 0 MAX 0);
-
-
