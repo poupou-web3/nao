@@ -14,6 +14,7 @@ import { agentRoutes } from './routes/agent';
 import { authRoutes } from './routes/auth';
 import { chartRoutes } from './routes/chart';
 import { slackRoutes } from './routes/slack';
+import { teamsRoutes } from './routes/teams';
 import { testRoutes } from './routes/test';
 import { posthog, PostHogEvent } from './services/posthog';
 import { TrpcRouter, trpcRouter } from './trpc/router';
@@ -101,6 +102,10 @@ app.register(slackRoutes, {
 	prefix: '/api/webhooks/slack',
 });
 
+app.register(teamsRoutes, {
+	prefix: '/api/webhooks/teams',
+});
+
 /**
  * Tests the API connection
  */
@@ -125,11 +130,12 @@ if (staticRoot) {
 	app.register(fastifyStatic, {
 		root: staticRoot,
 		prefix: '/',
+		wildcard: false,
 	});
 
 	// SPA fallback: serve index.html for all non-API routes
 	app.setNotFoundHandler((request, reply) => {
-		if (request.url.startsWith('/api')) {
+		if (request.url.startsWith('/api') || request.url.startsWith('/c')) {
 			reply.status(404).send({ error: 'Not found' });
 		} else {
 			reply.sendFile('index.html');

@@ -1,3 +1,4 @@
+import { story } from '@nao/shared/tools';
 import {
 	convertToModelMessages,
 	createUIMessageStream,
@@ -16,8 +17,8 @@ import { CACHE_1H, CACHE_5M } from '../agents/providers';
 import { ProviderModelResult } from '../agents/providers';
 import { getTools } from '../agents/tools';
 import { createWebSearchTools } from '../agents/tools/web-search';
-import { getConnections, getUserRules } from '../agents/user-rules';
-import { SlackSystemPrompt, SystemPrompt } from '../components/ai';
+import { getConnections, getTableColumnsContent, getUserRules } from '../agents/user-rules';
+import { MessagingProviderSystemPrompt, SystemPrompt } from '../components/ai';
 import { DBChat } from '../db/abstractSchema';
 import { renderToMarkdown } from '../lib/markdown';
 import * as chatQueries from '../queries/chat.queries';
@@ -27,6 +28,7 @@ import * as storyQueries from '../queries/story.queries';
 import { AgentSettings } from '../types/agent-settings';
 import { AgentTools, Mention, MessageCustomDataParts, TokenCost, TokenUsage, UIMessage } from '../types/chat';
 import { LlmProvider } from '../types/llm';
+import { Provider } from '../types/messaging-provider';
 import { ToolContext } from '../types/tools';
 import { convertToCost, convertToTokenUsage, findLastUserMessage } from '../utils/ai';
 import { HandlerError } from '../utils/error';
@@ -223,7 +225,8 @@ class AgentManager {
 		opts: {
 			events?: Partial<MessageCustomDataParts>;
 			mentions?: Mention[];
-			isSlack?: boolean;
+			provider?: Provider;
+			timezone?: string;
 		} = {},
 	): ReadableStream<InferUIMessageChunk<UIMessage>> {
 		let error: unknown = undefined;
@@ -247,7 +250,12 @@ class AgentManager {
 				}
 
 				this._streamWriter = writer;
-				const messages = await this._buildModelMessages(uiMessages, opts.mentions, opts.isSlack);
+				const messages = await this._buildModelMessages(
+					uiMessages,
+					opts.mentions,
+					opts.provider,
+					opts.timezone,
+				);
 
 				result = await this._agent.stream({
 					messages,
@@ -293,18 +301,23 @@ class AgentManager {
 	private async _buildModelMessages(
 		uiMessages: UIMessage[],
 		mentions?: Mention[],
-		isSlack?: boolean,
+		provider?: Provider,
+		timezone?: string,
 	): Promise<ModelMessage[]> {
 		const uiMessagesWithStories = await this._syncStoryToolOutputs(uiMessages);
-		const uiMessagesWithSkills = this._addSkills(uiMessagesWithStories, mentions);
-		const uiMessagesWithCompaction = compactionService.useLastCompaction(uiMessagesWithSkills);
+		const uiMessagesWithStoryMode = this._addStoryMode(uiMessagesWithStories, mentions);
+		const uiMessagesWithSkills = this._addSkills(uiMessagesWithStoryMode, mentions);
+		const uiMessagesWithDbContext = this._addDatabaseContext(uiMessagesWithSkills, mentions);
+		const uiMessagesWithCompaction = compactionService.useLastCompaction(uiMessagesWithDbContext);
 
 		const memories = await memoryService.safeGetUserMemories(this.chat.userId, this.chat.projectId, this.chat.id);
 		const userRules = getUserRules();
 		const connections = getConnections();
 		const skills = skillService.getSkills();
-		const basePrompt = renderToMarkdown(SystemPrompt({ memories, userRules, connections, skills }));
-		const systemPrompt = isSlack ? renderToMarkdown(SlackSystemPrompt({ basePrompt })) : basePrompt;
+		const basePrompt = renderToMarkdown(SystemPrompt({ memories, userRules, connections, skills, timezone }));
+		const systemPrompt = provider
+			? renderToMarkdown(MessagingProviderSystemPrompt({ basePrompt, provider }))
+			: basePrompt;
 
 		const systemMessage: Omit<UIMessage, 'id'> = {
 			role: 'system',
@@ -445,31 +458,66 @@ class AgentManager {
 		this._abortController.abort();
 	}
 
-	private _addSkills(messages: UIMessage[], mentions?: Mention[]): UIMessage[] {
-		const skillMention = mentions?.find((m) => m.trigger === '/');
-		if (!skillMention) {
+	private _addStoryMode(messages: UIMessage[], mentions?: Mention[]): UIMessage[] {
+		if (!mentions?.some((m) => m.id === story.MENTION_ID)) {
 			return messages;
 		}
 
-		const skillContent = skillService.getSkillContent(skillMention.id);
+		const STORY_INSTRUCTION =
+			'[Story mode: present your response as an interactive nao Story using the story tool, combining markdown and charts]';
+		return this._transformLastUserMessageText(messages, (text) => `${STORY_INSTRUCTION}\n\n${text}`);
+	}
+
+	private _addSkills(messages: UIMessage[], mentions?: Mention[]): UIMessage[] {
+		const skillMention = mentions?.find((m) => m.trigger === '/');
+		const skillContent = skillMention ? skillService.getSkillContent(skillMention.id) : undefined;
 		if (!skillContent) {
 			return messages;
 		}
+		return this._transformLastUserMessageText(messages, () => truncateMiddle(skillContent, 16_000));
+	}
 
+	private _addDatabaseContext(messages: UIMessage[], mentions?: Mention[]): UIMessage[] {
+		const dbMentions = mentions?.filter((m) => m.trigger === '@') ?? [];
+		if (dbMentions.length === 0) {
+			return messages;
+		}
+
+		const contextParts: string[] = [];
+		for (const mention of dbMentions) {
+			const content = getTableColumnsContent(this._toolContext.projectFolder, mention.id);
+			if (content) {
+				contextParts.push(`[Table: ${mention.id}]\n${content}`);
+			}
+		}
+
+		if (contextParts.length === 0) {
+			return messages;
+		}
+
+		const dbContext = contextParts.join('\n\n');
+		return this._transformLastUserMessageText(
+			messages,
+			(text) => `${text}\n\n---\nReferenced tables:\n${dbContext}`,
+		);
+	}
+
+	private _transformLastUserMessageText(messages: UIMessage[], transform: (text: string) => string): UIMessage[] {
 		const [lastUserMessage, lastUserMessageIndex] = findLastUserMessage(messages);
 		if (!lastUserMessage) {
 			return messages;
 		}
 
-		const updatedMessages = [...messages];
 		const textPartIndex = lastUserMessage.parts.findIndex((part) => part.type === 'text');
-		const newParts = [...lastUserMessage.parts];
-		newParts[textPartIndex] = {
-			type: 'text',
-			text: truncateMiddle(skillContent, 16_000),
-		};
-		updatedMessages[lastUserMessageIndex] = { ...lastUserMessage, parts: newParts };
+		if (textPartIndex === -1) {
+			return messages;
+		}
 
+		const textPart = lastUserMessage.parts[textPartIndex] as { type: 'text'; text: string };
+		const updatedMessages = [...messages];
+		const newParts = [...lastUserMessage.parts];
+		newParts[textPartIndex] = { type: 'text', text: transform(textPart.text) };
+		updatedMessages[lastUserMessageIndex] = { ...lastUserMessage, parts: newParts };
 		return updatedMessages;
 	}
 

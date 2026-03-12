@@ -2,11 +2,13 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod/v4';
 
 import { getProviderAuth, KNOWN_MODELS } from '../agents/providers';
+import { getDatabaseObjects } from '../agents/user-rules';
 import { env } from '../env';
 import * as projectQueries from '../queries/project.queries';
 import * as llmConfigQueries from '../queries/project-llm-config.queries';
 import * as savedPromptQueries from '../queries/project-saved-prompt.queries';
 import * as slackConfigQueries from '../queries/project-slack-config.queries';
+import * as teamsConfigQueries from '../queries/project-teams-config.queries';
 import { posthog, PostHogEvent } from '../services/posthog';
 import { getAvailableModels as getAvailableTranscribeModels } from '../services/transcribe.service';
 import { AgentSettings } from '../types/agent-settings';
@@ -25,6 +27,25 @@ export const projectRoutes = {
 			userRole: ctx.userRole,
 		};
 	}),
+
+	getDatabaseObjects: projectProtectedProcedure
+		.output(
+			z.array(
+				z.object({
+					type: z.string(),
+					database: z.string(),
+					schema: z.string(),
+					table: z.string(),
+					fqdn: z.string(),
+				}),
+			),
+		)
+		.query(({ ctx }) => {
+			if (!ctx.project?.path) {
+				return [];
+			}
+			return getDatabaseObjects(ctx.project.path);
+		}),
 
 	getLlmConfigs: projectProtectedProcedure
 		.output(
@@ -209,6 +230,85 @@ export const projectRoutes = {
 
 	deleteSlackConfig: adminProtectedProcedure.mutation(async ({ ctx }) => {
 		await slackConfigQueries.deleteProjectSlackConfig(ctx.project.id);
+		return { success: true };
+	}),
+
+	getTeamsConfig: projectProtectedProcedure.query(async ({ ctx }) => {
+		if (!ctx.project) {
+			return { projectConfig: null, projectId: '' };
+		}
+
+		const config = await teamsConfigQueries.getProjectTeamsConfig(ctx.project.id);
+
+		const projectConfig = config
+			? {
+					appIdPreview: config.appId.slice(0, 4) + '...' + config.appId.slice(-4),
+					appPasswordPreview: config.appPassword.slice(0, 4) + '...' + config.appPassword.slice(-4),
+					tenantIdPreview: config.tenantId.slice(0, 4) + '...' + config.tenantId.slice(-4),
+					modelSelection: config.modelSelection,
+				}
+			: null;
+
+		const baseUrl = env.BETTER_AUTH_URL || 'http://localhost:3000';
+		return {
+			projectConfig,
+			projectId: ctx.project.id,
+			redirectUrl: baseUrl,
+			messagingEndpointUrl: `${baseUrl}/api/webhooks/teams/${ctx.project.id}`,
+		};
+	}),
+
+	upsertTeamsConfig: adminProtectedProcedure
+		.input(
+			z.object({
+				appId: z.string().min(1),
+				appPassword: z.string().min(1),
+				tenantId: z.string().min(1),
+				modelProvider: llmProviderSchema.optional(),
+				modelId: z.string().optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const config = await teamsConfigQueries.upsertProjectTeamsConfig({
+				projectId: ctx.project.id,
+				appId: input.appId,
+				appPassword: input.appPassword,
+				tenantId: input.tenantId,
+				modelProvider: input.modelProvider,
+				modelId: input.modelId,
+			});
+
+			posthog.capture(ctx.user.id, PostHogEvent.TeamsConfigured, {
+				project_id: ctx.project.id,
+				modelProvider: input.modelProvider,
+				modelId: input.modelId,
+			});
+
+			return {
+				appIdPreview: config.appId.slice(0, 4) + '...' + config.appId.slice(-4),
+				appPasswordPreview: config.appPassword.slice(0, 4) + '...' + config.appPassword.slice(-4),
+				tenantIdPreview: config.tenantId.slice(0, 4) + '...' + config.tenantId.slice(-4),
+				modelSelection: config.modelSelection,
+			};
+		}),
+
+	updateTeamsModelConfig: adminProtectedProcedure
+		.input(
+			z.object({
+				modelProvider: llmProviderSchema.optional(),
+				modelId: z.string().optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			await teamsConfigQueries.updateProjectTeamsModel(
+				ctx.project.id,
+				input.modelProvider ?? null,
+				input.modelId ?? null,
+			);
+		}),
+
+	deleteTeamsConfig: adminProtectedProcedure.mutation(async ({ ctx }) => {
+		await teamsConfigQueries.deleteProjectTeamsConfig(ctx.project.id);
 		return { success: true };
 	}),
 

@@ -1,6 +1,6 @@
 from typing import Annotated, Dict, Type, Union, cast
 
-from pydantic import Discriminator, Tag
+from pydantic import BaseModel, Discriminator, Tag
 
 from .athena import AthenaConfig
 from .base import DatabaseAccessor, DatabaseConfig, DatabaseType
@@ -53,17 +53,15 @@ DATABASE_CONFIG_CLASSES: Dict[DatabaseType, Type[object]] = {
 def parse_database_config(data: dict) -> AnyDatabaseConfig:
     """Parse a database config dict into the appropriate type."""
     raw_type = data.get("type")
+    if not isinstance(raw_type, str):
+        raise ValueError(f"Unknown database type: {raw_type}")
+
     try:
         db_type = DatabaseType(raw_type)
-    except (ValueError, KeyError):
-        raise ValueError(f"Unknown database type: {raw_type}")
-    config_class = DATABASE_CONFIG_CLASSES.get(db_type)
-    if config_class is None:
-        raise ValueError(f"Unsupported database type: {db_type}")
-    return cast(
-        AnyDatabaseConfig,
-        config_class.model_validate(data),  # type: ignore[unresolved-attribute]
-    )
+    except ValueError as e:
+        raise ValueError(f"Unknown database type: {raw_type}") from e
+    config_class = cast(Type[BaseModel], DATABASE_CONFIG_CLASSES[db_type])
+    return cast(AnyDatabaseConfig, config_class.model_validate(data))
 
 
 __all__ = [

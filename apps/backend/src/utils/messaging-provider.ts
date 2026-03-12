@@ -2,7 +2,9 @@ import { pluralize, TOOL_LABELS } from '@nao/shared';
 import type { CardChild, CardElement, ModalElement } from 'chat';
 import { Actions, Button, Card, CardText, Image, LinkButton } from 'chat';
 
-import { ToolCallEntry } from '../types/slack';
+import { ToolCallEntry } from '../types/messaging-provider';
+
+export const EXCLUDED_TOOLS = ['tool-suggest_follow_ups', 'tool-display_chart'];
 
 const TOOL_LIVE_LABELS: Record<string, (input: Record<string, string>) => string> = {
 	'tool-read': (input) => `_reading **${input['file_path'] ?? '...'}**_`,
@@ -16,7 +18,7 @@ export const createLiveToolCall = (toolGroup: Map<string, ToolCallEntry>): CardC
 	const lines = [...toolGroup.values()].map(
 		(entry) => TOOL_LIVE_LABELS[entry.type]?.(entry.input) ?? `_${entry.type}_`,
 	);
-	return CardText(lines.join('\n'));
+	return CardText(lines.join('\n\n'));
 };
 
 export const createSummaryToolCalls = (toolGroup: Map<string, ToolCallEntry>): CardChild => {
@@ -67,8 +69,26 @@ export const createCompletionCard = (chatUrl: string, vote?: 'up' | 'down'): Car
 	});
 
 export const createTextBlock = (text: string): CardChild => {
-	return CardText(text);
+	return CardText(mdToMrkdwn(text));
 };
+
+function mdToMrkdwn(text: string): string {
+	// Split on fenced and inline code spans so we never mutate literal content
+	const parts = text.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]+`)/);
+	return parts
+		.map((part, i) => {
+			if (i % 2 === 1) {
+				return part;
+			}
+			return part
+				.replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
+				.replace(/\*\*(.+?)\*\*/g, '*$1*')
+				.replace(/\*\*\s*\*\*/g, '')
+				.replace(/^\*\*$/gm, '')
+				.replace(/\*\*(?!\S)/g, '');
+		})
+		.join('');
+}
 
 export const createImageBlock = (url: string): CardChild => {
 	return Image({ url, alt: 'image' });

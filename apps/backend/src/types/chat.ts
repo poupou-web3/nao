@@ -33,7 +33,7 @@ export interface ChatListItem {
 
 export type UIMessage = UIGenericMessage<unknown, MessageCustomDataParts, UITools> & {
 	feedback?: MessageFeedback;
-	source?: 'slack' | 'web';
+	source?: 'slack' | 'teams' | 'web';
 };
 
 export type UITools = InferUITools<typeof tools>;
@@ -128,4 +128,5 @@ export const AgentRequestSchema = z.object({
 	messageToEditId: z.string().optional(),
 	model: ModelSelectionSchema.optional(),
 	mentions: z.array(MentionSchema).optional(),
+	timezone: z.string().optional(),
 });
