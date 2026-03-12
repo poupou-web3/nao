@@ -42,7 +42,11 @@ _No description available._
 {% if indexes %}
 ## Indexes and table definition
 
+{% if db.__class__.__name__ == "ClickHouseDatabaseContext" %}
+Use this when writing queries: filter using the most selective ORDER BY, or PARTITION BY columns, or PROJECTIONS to minimize scanned data and improve performance.
+{% else %}
 Use this when writing queries: filter on key/indexed columns when possible for best performance.
+{% endif %}
 
 ```
 {{ indexes }}

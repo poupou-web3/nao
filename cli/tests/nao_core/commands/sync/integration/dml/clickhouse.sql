@@ -23,7 +23,20 @@ CREATE TABLE orders (
     user_id UInt32,
     amount Float64
 ) ENGINE = MergeTree()
-ORDER BY (id);
+ORDER BY (id);  
+
+-- Add projection to orders table
+ALTER TABLE orders
+ADD PROJECTION orders_by_user_proj
+(
+    SELECT 
+        id,
+        user_id,
+        amount
+    ORDER BY user_id
+);
+-- Materialize projection
+ALTER TABLE orders MATERIALIZE PROJECTION orders_by_user_proj;
 
 INSERT INTO orders (id, user_id, amount) VALUES
     (1, 1, 99.99),

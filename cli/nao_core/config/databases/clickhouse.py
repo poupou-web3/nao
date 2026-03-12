@@ -68,6 +68,236 @@ def _show_create_table(conn: BaseBackend, database: str, table_name: str) -> str
     return None
 
 
+def _is_dictionary(conn: BaseBackend, database: str, table_name: str) -> bool:
+    """Return True if the object is a dictionary.
+
+    Dictionaries created via DDL are registered in system.dictionaries, not system.tables.
+    """
+    try:
+        d = database.replace("\\", "\\\\").replace("'", "''")
+        t = table_name.replace("\\", "\\\\").replace("'", "''")
+        sql = f"SELECT 1 FROM system.dictionaries WHERE database = '{d}' AND name = '{t}' LIMIT 1"
+        cursor = conn.raw_sql(sql)  # type: ignore[union-attr]
+        rows = _raw_sql_to_rows(cursor)
+        return bool(rows)
+    except Exception:
+        return False
+
+
+def _show_create_dictionary(conn: BaseBackend, database: str, dictionary_name: str) -> str | None:
+    """Return the result of SHOW CREATE DICTIONARY for the given dictionary, or None on error."""
+    try:
+        sql = f"SHOW CREATE DICTIONARY `{database}`.`{dictionary_name}`"
+        cursor = conn.raw_sql(sql)  # type: ignore[union-attr]
+        if hasattr(cursor, "fetchone"):
+            row = cursor.fetchone()
+        elif hasattr(cursor, "result_rows") and hasattr(cursor, "column_names"):
+            rows = getattr(cursor, "result_rows", [])
+            if not rows:
+                return None
+            row = rows[0]
+        else:
+            return None
+        if row is not None and len(row) > 0:
+            return str(row[0]).strip()
+    except Exception:
+        return None
+    return None
+
+
+def _format_key_expr(expr: Any) -> str | None:
+    """Normalize ClickHouse key expressions from system tables."""
+    if expr is None:
+        return None
+    text = str(expr).strip()
+    return text or None
+
+
+def _table_indexes_from_system(conn: BaseBackend, database: str, table_name: str) -> str | None:
+    """Build concise index/storage metadata from system tables/projections/indices."""
+    try:
+        d = database.replace("\\", "\\\\").replace("'", "''")
+        t = table_name.replace("\\", "\\\\").replace("'", "''")
+
+        base_sql = f"""
+            SELECT engine, partition_key, primary_key, sorting_key, sampling_key
+            FROM system.tables
+            WHERE database = '{d}' AND name = '{t}'
+            LIMIT 1
+        """
+        base_rows = _raw_sql_to_rows(conn.raw_sql(base_sql))  # type: ignore[union-attr]
+        if not base_rows:
+            return None
+
+        row = base_rows[0]
+        lines = [f"CREATE TABLE `{database}`.`{table_name}`"]
+
+        engine = _format_key_expr(row.get("engine"))
+        if engine:
+            lines.append(f"ENGINE = {engine}")
+
+        partition_key = _format_key_expr(row.get("partition_key"))
+        if partition_key:
+            lines.append(f"PARTITION BY {partition_key}")
+
+        primary_key = _format_key_expr(row.get("primary_key"))
+        if primary_key:
+            lines.append(f"PRIMARY KEY {primary_key}")
+
+        sorting_key = _format_key_expr(row.get("sorting_key"))
+        if sorting_key:
+            lines.append(f"ORDER BY {sorting_key}")
+
+        sampling_key = _format_key_expr(row.get("sampling_key"))
+        if sampling_key:
+            lines.append(f"SAMPLE BY {sampling_key}")
+
+        proj_sql = f"""
+            SELECT name, type, sorting_key
+            FROM system.projections
+            WHERE database = '{d}' AND table = '{t}'
+            ORDER BY name
+        """
+        proj_rows = _raw_sql_to_rows(conn.raw_sql(proj_sql))  # type: ignore[union-attr]
+        if proj_rows:
+            lines.append("PROJECTIONS:")
+            for proj in proj_rows:
+                name = str(proj.get("name", "")).strip()
+                proj_type = str(proj.get("type", "")).strip()
+                p_sort = proj.get("sorting_key")
+                p_sort_str = ", ".join(map(str, p_sort)) if isinstance(p_sort, list) else str(p_sort or "").strip()
+                suffix = f" ORDER BY {p_sort_str}" if p_sort_str else ""
+                type_suffix = f" ({proj_type})" if proj_type else ""
+                lines.append(f"  PROJECTION {name}{type_suffix}{suffix}")
+
+        idx_sql = f"""
+            SELECT name, type_full, expr, granularity
+            FROM system.data_skipping_indices
+            WHERE database = '{d}' AND table = '{t}'
+            ORDER BY name
+        """
+        idx_rows = _raw_sql_to_rows(conn.raw_sql(idx_sql))  # type: ignore[union-attr]
+        if idx_rows:
+            lines.append("DATA SKIPPING INDICES:")
+            for idx in idx_rows:
+                name = str(idx.get("name", "")).strip()
+                idx_type = str(idx.get("type_full", "")).strip()
+                expr = str(idx.get("expr", "")).strip()
+                granularity = idx.get("granularity")
+                granularity_str = f" GRANULARITY {granularity}" if granularity is not None else ""
+                expr_str = f" expr={expr}" if expr else ""
+                lines.append(f"  INDEX {name} {idx_type}{expr_str}{granularity_str}".strip())
+
+        return "\n".join(lines)
+    except Exception:
+        return None
+
+
+def _dictionary_indexes_from_system(conn: BaseBackend, database: str, dictionary_name: str) -> str | None:
+    """Build concise dictionary metadata from system.dictionaries.
+
+    Returns None when crucial metadata (source/layout) is unavailable so callers can
+    fall back to SHOW CREATE DICTIONARY.
+    """
+    try:
+        d = database.replace("\\", "\\\\").replace("'", "''")
+        t = dictionary_name.replace("\\", "\\\\").replace("'", "''")
+        sql = f"""
+            SELECT type, source, `key.names`, lifetime_min, lifetime_max
+            FROM system.dictionaries
+            WHERE database = '{d}' AND name = '{t}'
+            LIMIT 1
+        """
+        rows = _raw_sql_to_rows(conn.raw_sql(sql))  # type: ignore[union-attr]
+        if not rows:
+            return None
+
+        row = rows[0]
+        source = str(row.get("source") or "").strip()
+        layout = str(row.get("type") or "").strip()
+
+        # If dictionary failed to load, system metadata often lacks source/layout.
+        # In that case prefer SHOW CREATE fallback which still has DDL metadata.
+        if not source or not layout:
+            return None
+
+        lines = [f"CREATE DICTIONARY `{database}`.`{dictionary_name}`"]
+        key_names = row.get("key.names")
+        if isinstance(key_names, list) and key_names:
+            lines.append(f"PRIMARY KEY {', '.join(map(str, key_names))}")
+        lines.append(f"SOURCE({source})")
+        lines.append(f"LAYOUT({layout})")
+
+        lifetime_min = row.get("lifetime_min")
+        lifetime_max = row.get("lifetime_max")
+        if lifetime_min is not None and lifetime_max is not None:
+            lines.append(f"LIFETIME(MIN {lifetime_min} MAX {lifetime_max})")
+
+        return "\n".join(lines)
+    except Exception:
+        return None
+
+
+def _summarize_table_ddl(ddl: str) -> str:
+    """Return a concise table metadata summary extracted from SHOW CREATE TABLE."""
+
+    def _lines_with_depth(sql: str) -> list[tuple[str, str, int]]:
+        depth = 0
+        out: list[tuple[str, str, int]] = []
+        for raw in sql.splitlines():
+            line = raw.strip().rstrip(",")
+            if not line:
+                continue
+            out.append((line, line.upper(), depth))
+            depth += raw.count("(") - raw.count(")")
+            if depth < 0:
+                depth = 0
+        return out
+
+    lines = _lines_with_depth(ddl)
+    summary: list[str] = []
+
+    # Keep object header line for context (table name).
+    for line, upper, depth in lines:
+        if depth == 0 and upper.startswith("CREATE TABLE"):
+            summary.append(line)
+            break
+
+    for prefix in ("ENGINE =", "PARTITION BY", "PRIMARY KEY", "ORDER BY", "SAMPLE BY", "TTL", "SETTINGS"):
+        for line, upper, depth in lines:
+            if depth == 0 and upper.startswith(prefix):
+                summary.append(line)
+                break
+
+    projections = [line for line, upper, _ in lines if upper.startswith("PROJECTION ")]
+    if projections:
+        summary.append("PROJECTIONS:")
+        summary.extend(f"  {line}" for line in projections)
+
+    # If parsing misses everything (unexpected format), fall back to raw DDL.
+    return "\n".join(summary) if summary else ddl
+
+
+def _summarize_dictionary_ddl(ddl: str) -> str:
+    """Return a concise dictionary metadata summary extracted from SHOW CREATE DICTIONARY."""
+    lines = [line.strip().rstrip(",") for line in ddl.splitlines() if line.strip()]
+    upper_lines = [line.upper() for line in lines]
+    summary: list[str] = []
+
+    for line, upper in zip(lines, upper_lines, strict=False):
+        if upper.startswith("CREATE DICTIONARY"):
+            summary.append(line)
+            break
+
+    for prefix in ("PRIMARY KEY", "SOURCE(", "LIFETIME(", "LAYOUT("):
+        for line, upper in zip(lines, upper_lines, strict=False):
+            if upper.startswith(prefix):
+                summary.append(line)
+                break
+
+    return "\n".join(summary) if summary else ddl
+
+
 def _build_preview_select_expressions(schema: dict) -> list[str]:
     """Build SELECT expression for each column from table definition (schema).
 
@@ -141,6 +371,24 @@ def _columns_from_system(conn: BaseBackend, database: str, table_name: str) -> l
         return []
 
 
+def _get_table_engine(conn: BaseBackend, database: str, table_name: str) -> str | None:
+    """Return the table engine from system.tables, or None on error."""
+    try:
+        d = database.replace("\\", "\\\\").replace("'", "''")
+        t = table_name.replace("\\", "\\\\").replace("'", "''")
+        sql = f"SELECT engine FROM system.tables WHERE database = '{d}' AND name = '{t}'"
+        cursor = conn.raw_sql(sql)  # type: ignore[union-attr]
+        rows = _raw_sql_to_rows(cursor)
+        if not rows:
+            return None
+        engine = rows[0].get("engine")
+        if not engine:
+            return None
+        return str(engine).strip() or None
+    except Exception:
+        return None
+
+
 class ClickHouseDatabaseContext(DatabaseContext):
     """ClickHouse context that uses SHOW CREATE TABLE and schema to know how to query.
 
@@ -156,16 +404,46 @@ class ClickHouseDatabaseContext(DatabaseContext):
     def __init__(self, conn: BaseBackend, schema: str, table_name: str):
         super().__init__(conn, schema, table_name)
         self._direct_select_disallowed: bool = False
+        self._is_dictionary_obj: bool | None = None
+
+    @property
+    def is_dictionary(self) -> bool:
+        if self._is_dictionary_obj is None:
+            self._is_dictionary_obj = _is_dictionary(self._conn, self._schema, self._table_name)
+        return self._is_dictionary_obj
 
     def description(self) -> str | None:
         return _get_table_comment(self._conn, self._schema, self._table_name)
 
     def indexes(self) -> str | None:
-        """Return table DDL (SHOW CREATE TABLE) so the agent sees ORDER BY, PRIMARY KEY, PARTITION BY, and indexes."""
-        return _show_create_table(self._conn, self._schema, self._table_name)
+        """Return concise index/storage metadata, preferring system tables over DDL parsing."""
+        if self.is_dictionary:
+            system_summary = _dictionary_indexes_from_system(self._conn, self._schema, self._table_name)
+            if system_summary:
+                return system_summary
+            ddl = _show_create_dictionary(self._conn, self._schema, self._table_name)
+            return _summarize_dictionary_ddl(ddl) if ddl else None
+        system_summary = _table_indexes_from_system(self._conn, self._schema, self._table_name)
+        if system_summary:
+            return system_summary
+        ddl = _show_create_table(self._conn, self._schema, self._table_name)
+        return _summarize_table_ddl(ddl) if ddl else None
 
     def row_count(self) -> int:
         """Return row count; for stream-like engines (Kafka/RabbitMQ/FileLog) direct SELECT is disallowed, return 0."""
+        if self.is_dictionary:
+            # Dictionary reads can fail when SOURCE credentials differ from sync credentials.
+            # Try a normal count first, then degrade gracefully.
+            try:
+                return self.table.count().execute()
+            except Exception as e:
+                logger.debug(
+                    "ClickHouse dictionary row_count failed for %s.%s: %s; returning 0",
+                    self._schema,
+                    self._table_name,
+                    e,
+                )
+                return 0
         if self._direct_select_disallowed:
             return 0
         try:
@@ -187,16 +465,13 @@ class ClickHouseDatabaseContext(DatabaseContext):
             return len(_columns_from_system(self._conn, self._schema, self._table_name))
         try:
             return len(self.table.schema())
-        except Exception as e:
-            if _is_direct_select_disallowed(e):
-                self._direct_select_disallowed = True
-                return len(_columns_from_system(self._conn, self._schema, self._table_name))
-            raise
+        except Exception:
+            return len(_columns_from_system(self._conn, self._schema, self._table_name))
 
     def columns(self) -> list[dict[str, Any]]:
         """Return column metadata; for stream-like engines use system.columns (no SELECT from table)."""
         if self._direct_select_disallowed:
-            return []
+            return _columns_from_system(self._conn, self._schema, self._table_name)
         try:
             schema = self.table.schema()
             return [
@@ -208,11 +483,8 @@ class ClickHouseDatabaseContext(DatabaseContext):
                 }
                 for name, dtype in schema.items()
             ]
-        except Exception as e:
-            if _is_direct_select_disallowed(e):
-                self._direct_select_disallowed = True
-                return _columns_from_system(self._conn, self._schema, self._table_name)
-            raise
+        except Exception:
+            return _columns_from_system(self._conn, self._schema, self._table_name)
 
     def preview(self, limit: int = 10) -> list[dict[str, Any]]:
         """Return preview rows by building SELECT from table definition.
@@ -222,21 +494,34 @@ class ClickHouseDatabaseContext(DatabaseContext):
         automatically use the no-SELECT path (DDL only) once 620 is detected.
         """
         if self._direct_select_disallowed:
-            ddl = _show_create_table(self._conn, self._schema, self._table_name)
-            return [{"create_table": ddl}] if ddl else []
+            return []
 
+        # Aggregating engines can require FINAL or custom aggregation and can be
+        # expensive to query for preview. Skip preview entirely for them.
         try:
-            schema = self.table.schema()
-        except Exception as e:
-            if _is_direct_select_disallowed(e):
-                self._direct_select_disallowed = True
-                ddl = _show_create_table(self._conn, self._schema, self._table_name)
-                return [{"create_table": ddl}] if ddl else []
-            raise
+            engine = _get_table_engine(self._conn, self._schema, self._table_name)
+            if engine and "aggregatingmergetree" in engine.lower():
+                logger.debug(
+                    "ClickHouse preview skipped for AggregatingMergeTree engine on %s.%s",
+                    self._schema,
+                    self._table_name,
+                )
+                return []
+        except Exception:
+            pass
 
-        if not schema:
-            ddl = _show_create_table(self._conn, self._schema, self._table_name)
-            return [{"create_table": ddl}] if ddl else []
+        schema = self.table.schema()
+
+        # For tables defined with AggregateFunction columns, preview queries can be
+        # both expensive and tricky to express correctly. In this case we skip the
+        # preview entirely and return an empty list.
+        if any(_aggregate_function_name(dtype) for dtype in schema.values()):
+            logger.debug(
+                "ClickHouse preview skipped for AggregateFunction table %s.%s",
+                self._schema,
+                self._table_name,
+            )
+            return []
 
         select_parts = _build_preview_select_expressions(schema)
         quoted_table = f"`{self._schema}`.`{self._table_name}`"
@@ -247,18 +532,12 @@ class ClickHouseDatabaseContext(DatabaseContext):
             rows = _raw_sql_to_rows(cursor)
             return [_normalize_row(r) for r in rows]
         except Exception as e:
-            if _is_direct_select_disallowed(e):
-                self._direct_select_disallowed = True
-            else:
-                logger.debug(
-                    "ClickHouse preview query failed for %s.%s: %s; returning DDL",
-                    self._schema,
-                    self._table_name,
-                    e,
-                )
-            ddl = _show_create_table(self._conn, self._schema, self._table_name)
-            if ddl:
-                return [{"create_table": ddl}]
+            logger.debug(
+                "ClickHouse preview query failed for %s.%s: %s; returning empty list",
+                self._schema,
+                self._table_name,
+                e,
+            )
             return []
 
 
@@ -284,7 +563,7 @@ class ClickHouseConfig(DatabaseConfig):
         default=None,
         description="If set, only sync these databases (schema names). Empty or None = sync all user databases.",
     )
-    accessors: list = Field(
+    accessors: list[DatabaseAccessor] = Field(
         default_factory=lambda: list(DatabaseAccessor),
         description="Which default templates to render per table. Defaults to all.",
     )

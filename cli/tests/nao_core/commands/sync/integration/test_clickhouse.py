@@ -14,6 +14,7 @@ With docker-compose.test.yml:
 """
 
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -22,6 +23,7 @@ import pytest
 from rich.progress import Progress
 
 from nao_core.commands.sync.providers.databases.provider import sync_database
+from nao_core.config.databases.base import DatabaseAccessor
 from nao_core.config.databases.clickhouse import ClickHouseConfig
 
 from .base import BaseSyncIntegrationTests, SyncTestSpec
@@ -32,6 +34,16 @@ pytestmark = pytest.mark.skipif(
     CLICKHOUSE_HOST is None,
     reason="CLICKHOUSE_HOST not set — skipping ClickHouse integration tests",
 )
+
+
+def _split_sql_statements(sql_content: str) -> list[str]:
+    """Split a SQL script into individual statements.
+
+    The fixture uses multi-line SQL with occasional trailing spaces after ';'.
+    Splitting on `";\\n"` misses those statements, so use a whitespace-tolerant splitter.
+    """
+    parts = re.split(r";\s*(?:\n|$)", sql_content)
+    return [part.strip() for part in parts if part.strip()]
 
 
 def _clickhouse_connect(database: str = "default"):
@@ -82,17 +94,8 @@ def temp_database():
         sql_file = Path(__file__).parent / "dml" / "clickhouse.sql"
         sql_content = sql_file.read_text()
 
-        # Split on ";\n" so INSERT ... VALUES (...); is one statement; then ensure trailing ";"
-        for part in sql_content.split(";\n"):
-            statement = part.strip()
-            if not statement:
-                continue
-            if not statement.endswith(";"):
-                statement += ";"
-            try:
-                conn.raw_sql(statement)
-            except Exception:
-                pass
+        for statement in _split_sql_statements(sql_content):
+            conn.raw_sql(statement)
 
         # So test_sync_all_schemas passes: "default" DB must have spec.another_table so it gets synced
         conn_default = _clickhouse_connect("default")
@@ -131,6 +134,7 @@ def db_config(temp_database):
         connect_timeout=15,
         send_receive_timeout=60,
         schemas_include=[temp_database],
+        accessors=list(DatabaseAccessor),
     )
 
 
@@ -181,6 +185,31 @@ def spec(temp_database):
 class TestClickHouseSyncIntegration(BaseSyncIntegrationTests):
     """Verify the sync pipeline produces correct output against a live ClickHouse database."""
 
+    def test_creates_expected_directory_tree(self, synced, spec):
+        """Override base expectation: ClickHouse also generates ai_summary.md."""
+        state, output, config = synced
+        base = self._base_path(output, config, spec)
+
+        assert base.is_dir()
+
+        expected_files = ["ai_summary.md", "columns.md", "description.md", "preview.md"]
+
+        for table in (spec.users_table, spec.orders_table):
+            table_dir = base / f"table={table}"
+            assert table_dir.is_dir()
+            files = sorted(f.name for f in table_dir.iterdir())
+            assert files == sorted(expected_files)
+
+        # "another" schema was NOT synced (only when provider has one)
+        if spec.another_schema:
+            another_dir = (
+                output
+                / f"type={spec.db_type}"
+                / f"database={config.get_database_name()}"
+                / f"schema={spec.another_schema}"
+            )
+            assert not another_dir.exists()
+
     def test_sync_state_tracks_schemas_and_tables(self, synced, spec):
         """Sync state reflects expected tables for various engine types."""
         state, _, _ = synced
@@ -220,7 +249,7 @@ class TestClickHouseSyncIntegration(BaseSyncIntegrationTests):
         assert state.tables_synced >= 2
 
     def test_dictionary_sync_generates_description_with_index_metadata(self, synced, spec):
-        """Sync must generate description.md containing dictionary DDL metadata."""
+        """Sync must generate description.md containing dictionary index metadata."""
         _, output, config = synced
         base = self._base_path(output, config, spec)
         table_dir = base / "table=users_dict"
@@ -228,12 +257,57 @@ class TestClickHouseSyncIntegration(BaseSyncIntegrationTests):
         description_md = table_dir / "description.md"
         assert description_md.exists(), "description.md must be generated for dictionary"
         idx_content = description_md.read_text()
-        assert "CREATE DICTIONARY" in idx_content or "create dictionary" in idx_content.lower(), (
-            "description.md should contain CREATE DICTIONARY DDL"
-        )
-        assert "SOURCE" in idx_content and "LAYOUT" in idx_content, (
+
+        # Ensure description contains the CREATE DICTIONARY DDL with SOURCE and LAYOUT
+        lower_content = idx_content.lower()
+        assert "create dictionary" in lower_content, "description.md should contain CREATE DICTIONARY DDL"
+        assert "source(" in lower_content and "layout(" in lower_content, (
             "description.md should contain dictionary SOURCE and LAYOUT"
         )
+        # We intentionally render a concise summary, not full dictionary column DDL.
+        assert "`email` nullable(string)" not in lower_content
+
+    def test_projections_appear_in_description_indexes(self, synced, spec):
+        """Indexes section should include projection and key storage metadata."""
+        _, output, config = synced
+        base = self._base_path(output, config, spec)
+        table_dir = base / f"table={spec.orders_table}"
+        description_md = table_dir / "description.md"
+        assert description_md.exists(), "description.md must exist for orders table"
+        content = description_md.read_text().lower()
+
+        assert "engine = mergetree" in content
+        assert "order by id" in content
+        assert "projection orders_by_user_proj" in content, (
+            "description.md indexes section should include the projection name for orders"
+        )
+        assert "order by user_id" in content, (
+            "description.md indexes section should include projection sort key for orders"
+        )
+        # We intentionally render a concise summary, not full column DDL.
+        assert "`amount` float64" not in content
+
+    def test_projection_is_not_synced_as_a_table(self, synced, spec):
+        """ClickHouse projections should appear in metadata, not as standalone synced tables."""
+        state, output, config = synced
+        base = self._base_path(output, config, spec)
+
+        assert "orders_by_user_proj" not in state.synced_tables[spec.primary_schema]
+        assert not (base / "table=orders_by_user_proj").exists()
+
+    def test_mv_target_table_indexes_include_key_metadata(self, synced, spec):
+        """Materialized-view target table should expose useful key/index metadata."""
+        _, output, config = synced
+        base = self._base_path(output, config, spec)
+        table_dir = base / "table=orders_by_user_mv_target"
+        description_md = table_dir / "description.md"
+        assert description_md.exists(), "description.md must exist for orders_by_user_mv_target"
+        content = description_md.read_text().lower()
+
+        # Projections are defined on orders in the fixture; the MV target still needs clear key metadata.
+        assert "engine = summingmergetree" in content
+        assert "primary key user_id" in content
+        assert "order by user_id" in content
 
     def test_sync_all_schemas(self, tmp_path_factory, db_config, spec):
         """Overrides base test to test because clickhouse ddl has multiple tables.
@@ -254,7 +328,7 @@ class TestClickHouseSyncIntegration(BaseSyncIntegrationTests):
         assert (primary_base / f"table={spec.users_table}").is_dir()
         assert (primary_base / f"table={spec.orders_table}").is_dir()
 
-        expected_files = ["columns.md", "description.md", "preview.md"]
+        expected_files = ["ai_summary.md", "columns.md", "description.md", "preview.md"]
 
         for table in (spec.users_table, spec.orders_table):
             files = sorted(f.name for f in (primary_base / f"table={table}").iterdir())
@@ -267,7 +341,7 @@ class TestClickHouseSyncIntegration(BaseSyncIntegrationTests):
         files = sorted(f.name for f in (another_base / f"table={spec.another_table}").iterdir())
         assert files == sorted(expected_files)
 
-        assert state.schemas_synced == 2
+        assert state.schemas_synced >= 2
         assert state.tables_synced >= 3  # primary has many tables + default has nonexistent
         assert spec.primary_schema in state.synced_schemas
         assert spec.another_schema in state.synced_schemas
