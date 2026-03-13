@@ -18,6 +18,7 @@ class DatabaseType(str, Enum):
     CLICKHOUSE = "clickhouse"
     DUCKDB = "duckdb"
     DATABRICKS = "databricks"
+    FABRIC = "fabric"
     SNOWFLAKE = "snowflake"
     MSSQL = "mssql"
     POSTGRES = "postgres"
@@ -80,8 +81,9 @@ class DatabaseConfig(BaseModel, ABC):
     def execute_sql(self, sql: str) -> pd.DataFrame:
         """Execute arbitrary SQL and return results as a DataFrame."""
         conn = self.connect()
-        cursor = conn.raw_sql(sql)  # type: ignore[union-attr]
         try:
+            cursor = conn.raw_sql(sql)  # type: ignore[union-attr]
+
             if hasattr(cursor, "fetchdf"):
                 return cursor.fetchdf()
             if hasattr(cursor, "to_dataframe"):
@@ -147,6 +149,17 @@ class DatabaseConfig(BaseModel, ABC):
 
         return DatabaseContext(conn, schema, table_name)
 
+    def _get_empty_credentials(self) -> list[str]:
+        """Get list of empty credential fields that typically cause connection failures."""
+        empty = []
+        # Check common credential fields
+        for field_name in ("password", "api_key", "access_key", "secret_key", "token", "api_token"):
+            if hasattr(self, field_name):
+                value = getattr(self, field_name)
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    empty.append(field_name)
+        return empty
+
     def check_connection(self) -> tuple[bool, str]:
         """Test connectivity to the database. Override in subclasses for custom behavior."""
         try:
@@ -156,4 +169,12 @@ class DatabaseConfig(BaseModel, ABC):
                 return True, f"Connected successfully ({len(schemas)} schemas found)"
             return True, "Connected successfully"
         except Exception as e:
-            return False, str(e)
+            error_msg = str(e)
+            empty_creds = self._get_empty_credentials()
+            if empty_creds and any(
+                keyword in error_msg.lower()
+                for keyword in ("auth", "password", "credentials", "forbidden", "401", "403", "permission")
+            ):
+                creds_list = ", ".join(f"'{c}'" for c in empty_creds)
+                return False, f"{error_msg} (check if environment variables for {creds_list} are set and non-empty)"
+            return False, error_msg

@@ -14,6 +14,7 @@ import type { UIMessage } from '@nao/backend/chat';
 import type { MentionOption } from 'prompt-mentions';
 import type ChatSelectedModel from '@/types/ai';
 import { messageQueueStore } from '@/stores/chat-message-queue';
+import { chatActivityStore } from '@/stores/chat-activity';
 import { useChatQuery, useSetChat } from '@/queries/use-chat-query';
 import { trpc } from '@/main';
 import { agentService } from '@/services/agents';
@@ -79,6 +80,15 @@ export const useAgent = (): AgentHelpers => {
 				return;
 			}
 
+			if (dataPart.type === 'data-chatTitleUpdate') {
+				const { title } = dataPart.data;
+				setChat({ chatId: agentId }, (prev) => (prev ? { ...prev, title } : prev));
+				setChatList((old) => ({
+					chats: (old?.chats ?? []).map((c) => (c.id === agentId ? { ...c, title } : c)),
+				}));
+				return;
+			}
+
 			if (dataPart.type === 'data-newUserMessage') {
 				const { newId } = dataPart.data;
 				const lastUserMessageIndex = getLastUserMessageIdx(agent.messages);
@@ -120,8 +130,12 @@ export const useAgent = (): AgentHelpers => {
 				if (next) {
 					mentionsRef.current = next.mentions;
 					newAgent.sendMessage({ text: next.text });
-				} else if (chatIdRef.current !== agentId) {
-					agentService.disposeAgent(agentId);
+				} else {
+					chatActivityStore.setRunning(agentId, false);
+					if (chatIdRef.current !== agentId) {
+						chatActivityStore.setUnread(agentId, true);
+						agentService.disposeAgent(agentId);
+					}
 				}
 			},
 			onError: () => {
@@ -136,6 +150,18 @@ export const useAgent = (): AgentHelpers => {
 
 	const stopAgentMutation = useMutation(trpc.chat.stop.mutationOptions());
 	const isRunning = checkIsAgentRunning({ status });
+
+	useEffect(() => {
+		if (chatId) {
+			chatActivityStore.setRunning(chatId, isRunning);
+		}
+	}, [chatId, isRunning]);
+
+	useEffect(() => {
+		if (chatId) {
+			chatActivityStore.setUnread(chatId, false);
+		}
+	}, [chatId]);
 
 	const stopAgent = useCallback(async () => {
 		if (!chatId) {
