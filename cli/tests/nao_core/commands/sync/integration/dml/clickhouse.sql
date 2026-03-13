@@ -62,9 +62,9 @@ CREATE TABLE low_cardinality_columns (
 ) ENGINE = MergeTree()
 ORDER BY (id);
 
-INSERT INTO low_cardinality_columns (id, env_name, client_tag) VALUES
-    (1, 'prod', NULL),
-    (2, 'staging', 'canary');
+INSERT INTO low_cardinality_columns (id, env_name) VALUES
+    (1, 'prod'),
+    (2, 'staging');
 
 -- Additional tables used only for sync-state counts ----------------
 CREATE TABLE orders_summing (

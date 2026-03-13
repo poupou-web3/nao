@@ -133,7 +133,7 @@ def db_config(temp_database):
         secure=secure,
         connect_timeout=15,
         send_receive_timeout=60,
-        schemas_include=[temp_database],
+        include=[f"{temp_database}.*"],
         accessors=list(DatabaseAccessor),
     )
 
@@ -174,8 +174,8 @@ def spec(temp_database):
         ],
         sort_rows=True,
         row_id_key="id",
-        # Enable get_schemas tests: restrict schemas via schemas_include; "default" DB exists for "without" test
-        schema_field="schemas_include",
+        # ClickHouse does not expose an explicit single-schema config field.
+        schema_field=None,
         another_schema="default",
         another_table="nonexistent",
     )

@@ -1,3 +1,4 @@
+import fnmatch
 import logging
 import re
 from typing import Any, Literal
@@ -47,10 +48,9 @@ def _normalize_row(row_dict: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _show_create_table(conn: BaseBackend, database: str, table_name: str) -> str | None:
-    """Return the result of SHOW CREATE TABLE for the given table, or None on error."""
+def _show_create(conn: BaseBackend, sql: str) -> str | None:
+    """Execute a SHOW CREATE query and return the DDL string, or None on error."""
     try:
-        sql = f"SHOW CREATE TABLE `{database}`.`{table_name}`"
         cursor = conn.raw_sql(sql)  # type: ignore[union-attr]
         if hasattr(cursor, "fetchone"):
             row = cursor.fetchone()
@@ -66,6 +66,16 @@ def _show_create_table(conn: BaseBackend, database: str, table_name: str) -> str
     except Exception:
         return None
     return None
+
+
+def _show_create_table(conn: BaseBackend, database: str, table_name: str) -> str | None:
+    """Execute a SHOW CREATE TABLE query and return the DDL string, or None on error."""
+    return _show_create(conn, f"SHOW CREATE TABLE `{database}`.`{table_name}`")
+
+
+def _show_create_dictionary(conn: BaseBackend, database: str, table_name: str) -> str | None:
+    """Execute a SHOW CREATE DICTIONARY query and return the DDL string, or None on error."""
+    return _show_create(conn, f"SHOW CREATE DICTIONARY `{database}`.`{table_name}`")
 
 
 def _is_dictionary(conn: BaseBackend, database: str, table_name: str) -> bool:
@@ -82,27 +92,6 @@ def _is_dictionary(conn: BaseBackend, database: str, table_name: str) -> bool:
         return bool(rows)
     except Exception:
         return False
-
-
-def _show_create_dictionary(conn: BaseBackend, database: str, dictionary_name: str) -> str | None:
-    """Return the result of SHOW CREATE DICTIONARY for the given dictionary, or None on error."""
-    try:
-        sql = f"SHOW CREATE DICTIONARY `{database}`.`{dictionary_name}`"
-        cursor = conn.raw_sql(sql)  # type: ignore[union-attr]
-        if hasattr(cursor, "fetchone"):
-            row = cursor.fetchone()
-        elif hasattr(cursor, "result_rows") and hasattr(cursor, "column_names"):
-            rows = getattr(cursor, "result_rows", [])
-            if not rows:
-                return None
-            row = rows[0]
-        else:
-            return None
-        if row is not None and len(row) > 0:
-            return str(row[0]).strip()
-    except Exception:
-        return None
-    return None
 
 
 def _format_key_expr(expr: Any) -> str | None:
@@ -298,26 +287,6 @@ def _summarize_dictionary_ddl(ddl: str) -> str:
     return "\n".join(summary) if summary else ddl
 
 
-def _build_preview_select_expressions(schema: dict) -> list[str]:
-    """Build SELECT expression for each column from table definition (schema).
-
-    Plain columns are selected as-is; AggregateFunction columns use the
-    -Merge combinator (e.g. uniqMerge(`col`)) so we can read them. This way
-    we know how to query the table from how it is defined.
-    """
-    parts = []
-    for name, dtype in schema.items():
-        quoted = f"`{name}`"
-        agg_name = _aggregate_function_name(dtype)
-        if agg_name:
-            # e.g. uniq -> uniqMerge(`name`) AS `name`
-            merge_func = f"{agg_name}Merge"
-            parts.append(f"{merge_func}({quoted}) AS {quoted}")
-        else:
-            parts.append(quoted)
-    return parts
-
-
 def _raw_sql_to_rows(cursor: Any) -> list[dict[str, Any]]:
     """Convert raw_sql cursor result to list of dicts (column name -> value)."""
     if hasattr(cursor, "result_rows") and hasattr(cursor, "column_names"):
@@ -374,28 +343,6 @@ def _columns_from_system(conn: BaseBackend, database: str, table_name: str) -> l
         ]
     except Exception:
         return []
-
-
-def _column_defaults_from_system(conn: BaseBackend, database: str, table_name: str) -> dict[str, dict[str, str | None]]:
-    """Return default-kind/expression metadata for table columns from system.columns."""
-    out: dict[str, dict[str, str | None]] = {}
-    for col in _columns_from_system(conn, database, table_name):
-        out[col["name"]] = {
-            "default_kind": col.get("default_kind"),
-            "default_expression": col.get("default_expression"),
-        }
-    return out
-
-
-def _column_types_from_system(conn: BaseBackend, database: str, table_name: str) -> dict[str, str]:
-    """Return native ClickHouse column type strings keyed by column name."""
-    out: dict[str, str] = {}
-    for col in _columns_from_system(conn, database, table_name):
-        name = col.get("name")
-        typ = col.get("type")
-        if isinstance(name, str) and isinstance(typ, str) and typ:
-            out[name] = typ
-    return out
 
 
 def _get_table_engine(conn: BaseBackend, database: str, table_name: str) -> str | None:
@@ -510,8 +457,20 @@ class ClickHouseDatabaseContext(DatabaseContext):
                 }
                 for name, dtype in schema.items()
             ]
-            system_types = _column_types_from_system(self._conn, self._schema, self._table_name)
-            defaults = _column_defaults_from_system(self._conn, self._schema, self._table_name)
+            system_columns = _columns_from_system(self._conn, self._schema, self._table_name)
+            system_types = {
+                col["name"]: col["type"]
+                for col in system_columns
+                if isinstance(col.get("name"), str) and isinstance(col.get("type"), str) and col["type"]
+            }
+            defaults = {
+                col["name"]: {
+                    "default_kind": col.get("default_kind"),
+                    "default_expression": col.get("default_expression"),
+                }
+                for col in system_columns
+                if isinstance(col.get("name"), str)
+            }
             for col in cols:
                 name = col.get("name")
                 if not isinstance(name, str):
@@ -566,7 +525,8 @@ class ClickHouseDatabaseContext(DatabaseContext):
             )
             return []
 
-        select_parts = _build_preview_select_expressions(schema)
+        # AggregateFunction tables are skipped above; plain column selection is sufficient here.
+        select_parts = [f"`{name}`" for name in schema]
         quoted_table = f"`{self._schema}`.`{self._table_name}`"
         sql = f"SELECT {', '.join(select_parts)} FROM {quoted_table} LIMIT {limit}"
 
@@ -602,10 +562,8 @@ class ClickHouseConfig(DatabaseConfig):
         default=None,
         description="Send/receive timeout in seconds (passed to ibis.clickhouse.connect).",
     )
-    schemas_include: list[str] | None = Field(
-        default=None,
-        description="If set, only sync these databases (schema names). Empty or None = sync all user databases.",
-    )
+    # System databases are skipped by default unless explicitly included.
+    _SYSTEM_DATABASES = frozenset(("INFORMATION_SCHEMA", "information_schema", "system"))
     accessors: list[DatabaseAccessor] = Field(
         default_factory=lambda: list(DatabaseAccessor),
         description="Which default templates to render per table. Defaults to all.",
@@ -662,19 +620,33 @@ class ClickHouseConfig(DatabaseConfig):
         """Get the database name for ClickHouse."""
         return self.database
 
-    # Built-in databases to exclude from sync (system tables can hang or require Zookeeper/SSL)
-    _SYSTEM_DATABASES = frozenset(("INFORMATION_SCHEMA", "information_schema", "system"))
-
     def get_schemas(self, conn: BaseBackend) -> list[str]:
         list_databases = getattr(conn, "list_databases", None)
-        if list_databases:
-            all_schemas = list_databases()
-            # If the user explicitly configured schemas_include, respect it even for system databases.
-            if self.schemas_include:
-                return [s for s in all_schemas if s in self.schemas_include]
-            # Otherwise, use the safe default set that skips system/internal databases.
-            return [s for s in all_schemas if s not in self._SYSTEM_DATABASES]
-        return []
+        if not list_databases:
+            return []
+
+        # include/exclude are schema.table globs; reduce them to schema globs for pre-filtering.
+        include_schema_patterns = [p.split(".", 1)[0] if "." in p else p for p in self.include]
+        exclude_schema_patterns = [
+            p.split(".", 1)[0] if "." in p else p
+            # Only schema-wide excludes should drop a schema up front.
+            for p in self.exclude
+            if "." not in p or p.endswith(".*")
+        ]
+
+        schemas: list[str] = []
+        for schema in list_databases():
+            # Keep system schemas off by default unless explicitly re-included (e.g. "system.*").
+            if schema in self._SYSTEM_DATABASES and not any(
+                fnmatch.fnmatch(schema, pattern) for pattern in include_schema_patterns
+            ):
+                continue
+            # Apply schema-level excludes before table listing for efficiency.
+            if exclude_schema_patterns and any(fnmatch.fnmatch(schema, pattern) for pattern in exclude_schema_patterns):
+                continue
+            schemas.append(schema)
+
+        return schemas
 
     def create_context(self, conn: BaseBackend, schema: str, table_name: str) -> ClickHouseDatabaseContext:
         """Use ClickHouse-specific context for resilient preview."""
