@@ -18,6 +18,22 @@
 | **Row Count** | {{ "{:,}".format(db.row_count()) }} |
 | **Column Count** | {{ db.column_count() }} |
 
+{% set partitions = db.partition_columns() %}
+{% if partitions %}
+## Partitioning
+
+| Property | Value |
+|----------|-------|
+| **Partition Column** | `{{ partitions[0] }}` |
+{% if db.requires_partition_filter() %}
+| **Requires Partition Filter** | Yes |
+{% endif %}
+{% set active_filter = db.active_partition_filter() %}
+{% if active_filter %}
+| **Active Filter** | `{{ active_filter }}` |
+{% endif %}
+
+{% endif %}
 ## Description
 
 {% if db.description() %}

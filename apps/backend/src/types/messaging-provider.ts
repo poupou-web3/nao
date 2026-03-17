@@ -1,14 +1,12 @@
 import { CardChild, Message, SentMessage, Thread } from 'chat';
 
 import { User } from '../db/abstractSchema';
-import { UIMessage } from './chat';
 
 export type ConversationContext = {
 	thread: Thread;
 	userMessage: Message;
 	user: User | null;
 	chatId: string;
-	assistantMessage: UIMessage | null;
 	convMessage: SentMessage | null;
 	blocks: CardChild[];
 	textBlockIndex: number;

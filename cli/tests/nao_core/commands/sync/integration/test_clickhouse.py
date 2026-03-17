@@ -172,6 +172,92 @@ def spec(temp_database):
             {"id": 1, "user_id": 1, "amount": 99.99},
             {"id": 2, "user_id": 1, "amount": 24.5},
         ],
+        users_profiling_rows=[
+            {
+                "column": "id",
+                "type": "UInt32",
+                "total_count": 3,
+                "null_count": 0,
+                "null_percentage": 0.0,
+                "distinct_count": 3,
+                "min": 1,
+                "max": 3,
+                "mean": 2.0,
+                "stddev": 0.8165,
+            },
+            {
+                "column": "name",
+                "type": "String",
+                "total_count": 3,
+                "null_count": 0,
+                "null_percentage": 0.0,
+                "distinct_count": 3,
+                "top_values": [
+                    {"value": "Alice", "count": 1},
+                    {"value": "Bob", "count": 1},
+                    {"value": "Charlie", "count": 1},
+                ],
+            },
+            {
+                "column": "email",
+                "type": "Nullable(String)",
+                "total_count": 3,
+                "null_count": 1,
+                "null_percentage": 33.33,
+                "distinct_count": 2,
+                "top_values": [
+                    {"value": "alice@example.com", "count": 1},
+                    {"value": "charlie@example.com", "count": 1},
+                ],
+            },
+            {
+                "column": "active",
+                "type": "UInt8",
+                "total_count": 3,
+                "null_count": 0,
+                "null_percentage": 0.0,
+                "distinct_count": 2,
+                "min": 0,
+                "max": 1,
+                "mean": 0.6667,
+                "stddev": 0.4714,
+            },
+        ],
+        orders_profiling_rows=[
+            {
+                "column": "id",
+                "type": "UInt32",
+                "total_count": 2,
+                "null_count": 0,
+                "null_percentage": 0.0,
+                "distinct_count": 2,
+                "min": 1,
+                "max": 2,
+                "mean": 1.5,
+                "stddev": 0.5,
+            },
+            {
+                "column": "user_id",
+                "type": "UInt32",
+                "total_count": 2,
+                "null_count": 0,
+                "null_percentage": 0.0,
+                "distinct_count": 1,
+                "top_values": [{"value": 1, "count": 2}],
+            },
+            {
+                "column": "amount",
+                "type": "Float64",
+                "total_count": 2,
+                "null_count": 0,
+                "null_percentage": 0.0,
+                "distinct_count": 2,
+                "min": 24.5,
+                "max": 99.99,
+                "mean": 62.245,
+                "stddev": 37.745,
+            },
+        ],
         sort_rows=True,
         row_id_key="id",
         # ClickHouse does not expose an explicit single-schema config field.
@@ -192,7 +278,7 @@ class TestClickHouseSyncIntegration(BaseSyncIntegrationTests):
 
         assert base.is_dir()
 
-        expected_files = ["ai_summary.md", "columns.md", "description.md", "preview.md"]
+        expected_files = ["ai_summary.md", "columns.md", "description.md", "preview.md", "profiling.md"]
 
         for table in (spec.users_table, spec.orders_table):
             table_dir = base / f"table={table}"

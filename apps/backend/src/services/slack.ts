@@ -169,7 +169,6 @@ class SlackService {
 			convMessage: null,
 			blocks: [],
 			textBlockIndex: -1,
-			assistantMessage: null,
 			isNewChat: false,
 			modelId: undefined,
 			timezone: undefined,
@@ -281,6 +280,7 @@ class SlackService {
 			model_id: ctx.modelId,
 			is_new_chat: ctx.isNewChat,
 			source: 'slack',
+			domain_host: new URL(this._redirectUrl).host,
 		});
 	}
 
@@ -292,6 +292,7 @@ class SlackService {
 			{ ...chat, userId: ctx.user!.id, projectId: this._projectId },
 			this._modelSelection,
 		);
+		ctx.modelId = agent.getModelId();
 		return agent.stream(chat.messages, { provider: 'slack', timezone: ctx.timezone });
 	}
 
@@ -306,8 +307,6 @@ class SlackService {
 			toolGroup: new Map(),
 			toolGroupBlockIndex: -1,
 		};
-
-		let lastMessage: UIMessage | null = null;
 
 		for await (const uiMessage of readUIMessageStream<UIMessage>({ stream })) {
 			const part = uiMessage.parts[uiMessage.parts.length - 1];
@@ -329,10 +328,8 @@ class SlackService {
 			} else if (part.type === 'tool-display_chart') {
 				await this._handleChartPart(part, state, ctx);
 			}
-			lastMessage = uiMessage;
 		}
 
-		ctx.assistantMessage = lastMessage;
 		await this._sendFinalText(ctx);
 		return state;
 	}

@@ -1,4 +1,4 @@
-name: Remove old artifacts
+name: Nightly cleanup
 
 on:
     schedule:
@@ -10,7 +10,6 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 10
 
-        # For private repos
         permissions:
             actions: write
 
@@ -18,7 +17,17 @@ jobs:
             - name: Remove old artifacts
               uses: c-hive/gha-remove-artifacts@v1
               with:
-                  age: '5 days' # '<number> <unit>', e.g. 5 days, 2 years, 90 seconds, parsed by Moment.js
-                  # Optional inputs
-                  # skip-tags: true
-                  # skip-recent: 5
+                  age: '5 days'
+
+    cleanup-docker-images:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+
+        steps:
+            - name: Remove all Docker images on VM
+              uses: appleboy/ssh-action@master
+              with:
+                  host: ${{ secrets.VM_HOST }}
+                  username: github-actions-demo
+                  key: ${{ secrets.PRIVATE_KEY }}
+                  script: docker rmi -f $(docker images -aq) 2>/dev/null || true

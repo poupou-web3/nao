@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 from abc import ABC, abstractmethod
 from enum import Enum
+from typing import cast
 
 import pandas as pd
 import questionary
@@ -37,7 +38,28 @@ class DatabaseAccessor(str, Enum):
     COLUMNS = "columns"
     DESCRIPTION = "description"
     PREVIEW = "preview"
+    PROFILING = "profiling"
     AI_SUMMARY = "ai_summary"
+
+
+class ProfilingRefreshPolicy(str, Enum):
+    ALWAYS = "always"
+    INTERVAL = "interval"
+    ONCE = "once"
+
+
+class ProfilingConfig(BaseModel):
+    """Configuration for profiling refresh policy."""
+
+    refresh_policy: ProfilingRefreshPolicy = Field(
+        default=ProfilingRefreshPolicy.ALWAYS,
+        description="When to recompute profiling: always, interval, or once",
+    )
+    interval_days: int = Field(
+        default=7,
+        ge=1,  # strictly positive
+        description="Number of days between profiling runs (only used when refresh_policy=interval)",
+    )
 
 
 class DatabaseConfig(BaseModel, ABC):
@@ -59,12 +81,17 @@ class DatabaseConfig(BaseModel, ABC):
             DatabaseAccessor.COLUMNS,
             DatabaseAccessor.DESCRIPTION,
             DatabaseAccessor.PREVIEW,
+            DatabaseAccessor.PROFILING,
         ],
         description=(
             "Which default templates to render per table "
             "(e.g., ['columns', 'description', 'ai_summary']). "
-            "Defaults to ['columns', 'description', 'preview']."
+            "Defaults to ['columns', 'description', 'preview', 'profiling']."
         ),
+    )
+    profiling: ProfilingConfig = Field(
+        default_factory=ProfilingConfig,
+        description="Profiling refresh policy configuration",
     )
 
     @classmethod
@@ -88,6 +115,8 @@ class DatabaseConfig(BaseModel, ABC):
                 return cursor.fetchdf()
             if hasattr(cursor, "to_dataframe"):
                 return cursor.to_dataframe()
+            if hasattr(cursor, "to_pandas"):
+                return cursor.to_pandas()
 
             # ClickHouse (clickhouse_connect) returns QueryResult with result_rows + column_names
             if hasattr(cursor, "result_rows") and hasattr(cursor, "column_names"):
@@ -138,9 +167,22 @@ class DatabaseConfig(BaseModel, ABC):
 
     def get_schemas(self, conn: BaseBackend) -> list[str]:
         """Return the list of schemas to sync. Override in subclasses for custom behavior."""
+        # Prefer schemas (dataset-like) when available.
+        list_schemas = getattr(conn, "list_schemas", None)
+        if callable(list_schemas):
+            try:
+                schemas = cast(list[object], list_schemas())
+                return [str(schema) for schema in schemas]
+            except TypeError:
+                # Some backends require positional/keyword args. Fall back to other discovery.
+                pass
+
+        # Fall back to databases/catalogs if schemas aren't supported.
         list_databases = getattr(conn, "list_databases", None)
-        if list_databases:
-            return list_databases()
+        if callable(list_databases):
+            databases = cast(list[object], list_databases())
+            return [str(database) for database in databases]
+
         return []
 
     def create_context(self, conn: BaseBackend, schema: str, table_name: str):
@@ -164,8 +206,8 @@ class DatabaseConfig(BaseModel, ABC):
         """Test connectivity to the database. Override in subclasses for custom behavior."""
         try:
             conn = self.connect()
-            if list_databases := getattr(conn, "list_databases", None):
-                schemas = list_databases()
+            schemas = self.get_schemas(conn)
+            if schemas:
                 return True, f"Connected successfully ({len(schemas)} schemas found)"
             return True, "Connected successfully"
         except Exception as e:

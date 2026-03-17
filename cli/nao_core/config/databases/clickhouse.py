@@ -380,6 +380,11 @@ class ClickHouseDatabaseContext(DatabaseContext):
         self._direct_select_disallowed: bool = False
         self._is_dictionary_obj: bool | None = None
 
+    @staticmethod
+    def _format_type(dtype: Any) -> str:
+        raw = str(dtype)
+        return raw[1:] + " NOT NULL" if raw.startswith("!") else raw
+
     @property
     def is_dictionary(self) -> bool:
         if self._is_dictionary_obj is None:
@@ -487,6 +492,19 @@ class ClickHouseDatabaseContext(DatabaseContext):
             return cols
         except Exception:
             return _columns_from_system(self._conn, self._schema, self._table_name)
+
+    def _fetchone(self, result) -> tuple | None:
+        """Normalise clickhouse-connect QueryResult objects for profiling queries."""
+        if hasattr(result, "result_rows"):
+            rows = result.result_rows
+            return tuple(rows[0]) if rows else None
+        return super()._fetchone(result)
+
+    def _fetchall(self, result) -> list[tuple]:
+        """Normalise clickhouse-connect QueryResult objects for top-values queries."""
+        if hasattr(result, "result_rows"):
+            return [tuple(row) for row in result.result_rows]
+        return super()._fetchall(result)
 
     def preview(self, limit: int = 10) -> list[dict[str, Any]]:
         """Return preview rows by building SELECT from table definition.

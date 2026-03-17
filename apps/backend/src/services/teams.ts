@@ -26,6 +26,7 @@ import {
 	EXCLUDED_TOOLS,
 } from '../utils/messaging-provider';
 import { agentService, ModelSelection } from './agent';
+import { posthog, PostHogEvent } from './posthog';
 
 const UPDATE_INTERVAL_MS = 200;
 
@@ -136,7 +137,6 @@ class TeamsService {
 			convMessage: null,
 			blocks: [],
 			textBlockIndex: -1,
-			assistantMessage: null,
 			isNewChat: false,
 			modelId: undefined,
 			timezone: undefined,
@@ -225,6 +225,7 @@ class TeamsService {
 				source: 'teams',
 			});
 			ctx.chatId = existingChat.id;
+			ctx.isNewChat = false;
 		} else {
 			const title = createChatTitle({ text });
 			const [createdChat] = await chatQueries.createChat(
@@ -232,6 +233,7 @@ class TeamsService {
 				{ text, source: 'teams' },
 			);
 			ctx.chatId = createdChat.id;
+			ctx.isNewChat = true;
 		}
 	}
 
@@ -240,10 +242,8 @@ class TeamsService {
 			{ ...chat, userId: ctx.user!.id, projectId: this._projectId },
 			this._modelSelection,
 		);
-		const stream = agent.stream(chat.messages, { provider: 'teams' });
+		ctx.modelId = agent.getModelId();
 		const stopCard = await ctx.thread.post(createStopButtonCard());
-
-		const state = await this._readStreamAndUpdateMessage(stream, ctx);
 
 		await stopCard.delete();
 		await this._lastCompletionCard.get(ctx.thread.id)?.card.delete();
@@ -251,7 +251,14 @@ class TeamsService {
 		const card = await ctx.thread.post(createCompletionCard(chatUrl));
 		this._lastCompletionCard.set(ctx.thread.id, { card, chatUrl });
 
-		ctx.assistantMessage = state.lastMessage;
+		posthog.capture(ctx.user!.id, PostHogEvent.MessageSent, {
+			project_id: this._projectId,
+			chat_id: ctx.chatId,
+			model_id: ctx.modelId,
+			is_new_chat: ctx.isNewChat,
+			source: 'teams',
+			domain_host: new URL(this._redirectUrl).host,
+		});
 	}
 
 	private async _readStreamAndUpdateMessage(

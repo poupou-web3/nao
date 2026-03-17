@@ -1,9 +1,8 @@
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useMutation } from '@tanstack/react-query';
-import { useMemo, useEffect, useRef, useCallback } from 'react';
+import { useMemo, useEffect, useCallback } from 'react';
 import { Chat as Agent, useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
-import { useCurrent } from './useCurrent';
 import { useMemoObject } from './useMemoObject';
 import { usePrevRef } from './use-prev';
 import { useLocalStorage } from './use-local-storage';
@@ -44,15 +43,18 @@ export interface SendMessageArgs {
 
 const selectedModelStorage = createLocalStorage<ChatSelectedModel>('nao-selected-model');
 
+const selectedModelRef: { current: ChatSelectedModel | null } = { current: null };
+const mentionsRef: { current: MentionOption[] } = { current: [] };
+const chatIdRef: { current: string | undefined } = { current: undefined };
+
 export const useAgent = (): AgentHelpers => {
 	const navigate = useNavigate();
 	const chatId = useChatId();
-	const chatIdRef = useCurrent(chatId);
+	chatIdRef.current = chatId;
 	const chat = useChatQuery({ chatId });
 
 	const [selectedModel, setSelectedModel] = useLocalStorage(selectedModelStorage);
-	const selectedModelRef = useCurrent(selectedModel);
-	const mentionsRef = useRef<MentionOption[]>([]);
+	selectedModelRef.current = selectedModel;
 	const setChat = useSetChat();
 	const setChatList = useSetChatList();
 
@@ -144,7 +146,7 @@ export const useAgent = (): AgentHelpers => {
 		});
 
 		return agentService.registerAgent(agentId, newAgent);
-	}, [chatId, navigate, setChat, setChatList, chatIdRef, selectedModelRef]);
+	}, [chatId, navigate, setChat, setChatList]);
 
 	const { status, error, clearError, sendMessage, setMessages, messages } = useChat({ chat: agentInstance });
 
@@ -198,7 +200,7 @@ export const useAgent = (): AgentHelpers => {
 				mentions,
 			});
 		},
-		[isRunning, handleSendMessage, chatIdRef],
+		[isRunning, handleSendMessage],
 	);
 
 	const editMessage = useCallback(

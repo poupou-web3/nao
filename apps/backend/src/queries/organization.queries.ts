@@ -151,7 +151,7 @@ export const initializeDefaultOrganizationForFirstUser = async (userId: string):
 
 /**
  * Add a user to the default organization and project if they don't already exist.
- * Called when a new user signs up via Google OAuth (or other social provider).
+ * Called when a new user signs up.
  * Idempotent: safe to call multiple times for the same user.
  */
 export const addUserToDefaultProjectIfExists = async (userId: string): Promise<void> => {

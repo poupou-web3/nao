@@ -186,13 +186,15 @@ class AgentManager {
 		private readonly _agentTools: AgentTools,
 		private readonly _toolContext: ToolContext,
 	) {
+		const stopEarlyOnFollowUps = this._modelSelection.modelId !== 'gpt-5.4';
+
 		this._agent = new ToolLoopAgent({
 			model: this._modelConfig.model,
 			providerOptions: this._modelConfig.providerOptions,
 			tools: this._agentTools,
 			maxOutputTokens: MAX_OUTPUT_TOKENS,
 			prepareStep: async ({ messages }) => this._prepareStep(messages),
-			stopWhen: [hasToolCall('suggest_follow_ups')],
+			stopWhen: stopEarlyOnFollowUps ? [hasToolCall('suggest_follow_ups')] : [],
 			experimental_context: this._toolContext,
 		});
 	}
@@ -431,7 +433,7 @@ class AgentManager {
 
 		const { output } = await generateText({
 			model: modelResult.model,
-			system: 'Generate a short, descriptive title (3-8 words) for this conversation based on the user message. Always generate a title, no matter the input.',
+			system: 'Generate a short, descriptive title (3-8 words) for this conversation based on the user message. Always generate a title, no matter the input. Only capitalize the first letter of the title and nouns.',
 			messages: [
 				{
 					role: 'user',
